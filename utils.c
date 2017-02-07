@@ -38,6 +38,7 @@
 #include <arpa/inet.h>
 
 #include "mem.h"
+#include "utils.h"
 #include "logger.h"
 #include "queue.h"
 #include "nlkup.h"
@@ -573,4 +574,141 @@ int all_digits( const unsigned char *s) {
   }
 
   return 1;
+}
+
+char *str_trim( const char *s) {
+
+  if ( s == NULL || strlen( s) == 0)
+    return NULL;
+
+  char *ss = calloc( sizeof( char), strlen(s) + 1);
+  char *cp = (char *) s;
+  char *cpp = ss;
+
+  // get rid of left-hand spaces
+  while ( *cp != 0 && isspace( *cp)) cp++;
+
+  // get rid of right-hand spaces
+  char *ep = (char *) (s + strlen( s) - 1);
+  while ( ep != s && isspace( *ep)) ep--;
+  ep++; // pointing to char AFTER left-most right-hand space
+
+  // copy from [cp .. ep)
+  while ( *cp != 0 && cp != ep) *cpp++=*cp++;
+  
+  return ss;
+}
+
+void free_tokens( char **tokens) {
+
+  if ( tokens == NULL) 
+    return;
+
+  // last element in tokens is null
+  int idx = 0;
+  while ( *(tokens + idx) != NULL) {
+    free( *(tokens + idx));
+    *(tokens+idx) = NULL;
+    idx++;
+  }
+  free( tokens);
+}
+
+// returns char [][] of split strings. last element is NULL, there is thus at least always one element in array which would be NULL.
+// returned value must be freed
+char** str_split(const char* a_str, const char a_delim, int *nbr_tokens)
+{
+    char** result    = 0;
+    size_t count     = 0;
+    char* tmp        = (char *) a_str;
+    char* last_comma = 0;
+    char delim[2];
+    delim[0] = a_delim;
+    delim[1] = 0;
+
+    /* Count how many elements will be extracted. */
+    while (*tmp)
+    {
+        if (a_delim == *tmp)
+        {
+            count++;
+            last_comma = tmp;
+        }
+        tmp++;
+    }
+
+    /* Add space for trailing last token. I.e. .... a_delim ..... */
+    count += last_comma < (a_str + strlen(a_str) - 1);
+
+    *nbr_tokens = count;  // the nbr of tokens without NULL marker
+
+    /* Add space for terminating null string so caller
+       knows where the list of returned strings ends. */
+    count++;
+
+    result = calloc(count, sizeof(char*));
+
+    if (result)
+    {
+        size_t idx  = 0;
+        char* token = strtok( (char *) a_str, delim);
+
+        while (token)
+        {
+            assert(idx < count);
+	    char *tt = str_trim( token);
+            *(result + idx++) = strdup(tt);
+            token = strtok(0, delim);
+        }
+        assert(idx == count - 1);
+        *(result + idx) = 0;
+    } else {
+      *nbr_tokens = 0;
+    }
+
+    return result;
+}
+
+int all_spaces( char *s) {
+  char *cp = s;
+  while ( *cp != 0 && isspace( *cp)) cp++;
+  return ( *cp == 0); // reached end of string, all spaces
+}
+
+char *str_cat( const char *s, ...) {
+
+  if ( s == NULL) 
+    return NULL;
+  
+  // determine length of needed buffer
+  int len = strlen( s);
+
+  va_list argptr;
+  va_start(argptr,s);
+  while ( 1) {
+    char *cp = va_arg(argptr, char *);
+  
+    if ( cp == NULL) break; // end marker
+
+    len += strlen( cp);
+  }
+  va_end(argptr);
+
+  char *buf = calloc( sizeof( char), len+1);
+
+  strncpy( buf, s, len);
+
+  va_start(argptr,s);
+  while ( 1) {
+    char *cp = va_arg(argptr, char *);
+  
+    if ( cp == NULL) break; // end marker
+
+    int s_len = strlen( buf);
+    strncat( buf+s_len, cp, len-s_len);
+  }
+  va_end(argptr);
+  
+  return buf;  
+  
 }

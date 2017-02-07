@@ -90,21 +90,10 @@ typedef struct {
 #define NO_LOOKUP_TABLE -4
 #define NO_SUCH_ENTRY   -5
 
-// utils.c
-unsigned char *compress( const unsigned char nbr[], const int from, const int nbr_len);
-unsigned char *decompress( const unsigned char data[]);
-int compress_to_buf( const unsigned char nbr[], const int from, const int nbr_len, unsigned char *dest, const int dest_sz);
-int decompress_to_buf( const unsigned char data[], unsigned char dest[], const int dest_sz);
-
 // to lock an index table entry for a given prefix
 void lock_table( IdxTblEntry index_table[], int idx);
 // to unlock an index table entry for a given prefix
 void unlock_table( IdxTblEntry index_table[], int idx);
-
-// returns time in microseconds
-long get_time_micro();
-
-int all_digits( const unsigned char *s);
 
 // nlkup.c 
 int enter_entry( IdxTblEntry index_table[], const unsigned char *nbr, const unsigned char *alias);
@@ -119,9 +108,9 @@ int nlkup_delete_entry( const unsigned char *nbr);
 int nlkup_enter_entry( const unsigned char *nbr, const unsigned char *alias);
 int nlkup_dump_file( const unsigned char *fn, int binary);
 int nlkup_restore_file( const unsigned char *fn, int binary);
+int nlkup_process_file( const unsigned char *fn);
 
 int nlkup_init();
-
 
 // dumping one lookup table
 int dump_table( IdxTblEntry index_table[], int idx, FILE *f, int binary);

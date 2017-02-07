@@ -8,6 +8,7 @@
 
 #include "mem.h"
 #include "logger.h"
+#include "utils.h"
 #include "nlkup.h"
 
 static LkupTblEntry *alloc_lkup_tbl_entry() {
@@ -667,6 +668,116 @@ int nlkup_get_block( const unsigned char *nbr, LkupTblPtr *table) {
   unlock_table( index_table, idx);
   return SUCCESS;
 }
+
+int nlkup_dump_file( const unsigned char *fn, int binary) {
+  return dump_all_fn( index_table, fn, binary);
+}
+
+int nlkup_restore_file( const unsigned char *fn, int binary) {
+  return restore_all_fn( index_table, fn);
+}
+
+static int check_nbr( const char *nbr) {
+  if ( !all_digits( nbr) || strlen( nbr) >= MAX_NBR_LENGTH) {
+    log_msg( ERR, "process_file: illegal number %s\n", nbr);
+    return 0;
+  }
+  return 1;
+}
+
+static int process_file( IdxTblEntry index_table[], FILE *f) {
+
+  int s = 0;
+
+  char str_buf[1024];
+
+  while ( fgets( str_buf, sizeof( str_buf), f) != NULL) {
+    
+    if ( strlen( str_buf) == 0 || all_spaces( str_buf) || str_buf[0] == '#') {
+      continue;
+    }
+
+    int nbr_tokens;
+    char **tokens = str_split( str_buf, '=', &nbr_tokens);
+    if ( tokens == NULL) {
+      log_msg( ERR, "process_file: str_split returned NULL\n");
+      s = -1;
+      continue;
+    }
+    if ( nbr_tokens < 2 || tokens[0] == NULL || tokens[1] == NULL) {
+      log_msg( ERR, "process_file: str_split returned not enough tokens\n");      
+      s = -1;
+      continue;
+    }
+
+    if ( strcasecmp( tokens[0], "add") == 0) {
+
+      if ( nbr_tokens < 3 || IS_NULL( tokens[1]) || IS_NULL( tokens[2])) {
+	log_msg( ERR, "process_file: illegal add %s\n", str_buf);
+	s = -1;
+      } else {
+	char *nbr = tokens[1];
+	char *alias = tokens[2];
+
+	if ( check_nbr( nbr) && check_nbr( alias)) {
+	  enter_entry( index_table, nbr, alias);
+	} else {
+	  log_msg( ERR, "process_file: bad number or alias %s\n", str_buf);
+	  s = -1;
+	}
+
+      }
+
+    } else if ( strcasecmp( tokens[0], "del") == 0) {
+
+	char *nbr = tokens[1];
+
+	if ( check_nbr( nbr)) {
+	  delete_entry( index_table, nbr);
+	} else {
+	  log_msg( ERR, "process_file: bad number %s\n", str_buf);
+	}
+
+
+    } else {
+      log_msg( ERR, "process_file: unhandled command %s\n", str_buf);
+      s = -1;
+    }
+    
+    free_tokens( tokens);
+  }
+  
+  return s;
+
+}
+
+// processing a file of add or del commands
+int nlkup_process_file( const unsigned char *fn) {
+
+  if ( IS_NULL( fn))
+    return FAILURE;
+
+  FILE *f = fopen( fn, "r");
+  if ( f == NULL) {
+    log_msg( ERR, "failure to read-open %s\n", fn);
+    return FAILURE;
+  }
+
+  log_msg( INFO, "starting process file from %s\n", fn);
+
+  int s = process_file( index_table, f);
+
+  log_msg( INFO, "processing done\n");
+  
+  if ( fclose( f) < 0) {
+    log_msg( ERR, "failure to close %s\n", fn);
+    return FAILURE;
+  }
+
+  return s;
+
+}
+
 
 #ifdef _NLKUP_MAIN_
 
