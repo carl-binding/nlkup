@@ -28,32 +28,28 @@
  either expressed or implied, of the FreeBSD Project.
 */
 
-#ifndef _HASH_TABLE_H_
-#define _HASH_TABLE_H_
+#ifndef _SESSIONS_H_
+#define _SESSIONS_H_
 
-typedef void *HT_Table;
+typedef struct {
 
-typedef int (*HT_CompareTo)(const void *key1, const void *key2);
-typedef long (*HT_Hash)(const void *key);
+  char session_id[64];  // unique session id
+  int ref_cnt;          // reference counter of number of connections using this session
+  time_t last_access;   // last access time
 
-#define HT_STOP_ITERATION -1
-#define HT_DELETE_KEY -2
-typedef int (*HT_IteratorCallback)(const void *key, const void *data, void *arg);
+  char username[256];
+  char logged_in;
 
-HT_Table HT_new( const unsigned int size,
-		 HT_CompareTo compare_to_callback,
-		 HT_Hash hash_callback);
-void HT_free( HT_Table table);
+} SessionStruct, *Session;
 
-int HT_insert( HT_Table table, const void *key, const void *data, const int overwrite);
-int HT_delete( HT_Table table, const void *key);
-void *HT_lookup( HT_Table table, const void *key);
+Session sessions_get( struct MHD_Connection *connection);
 
-// iterates over hash-table. if callback returns HT_STOP_ITERATION, iteration is stopped.
-// if callback returns HT_DELETE_KEY the last key is deleted after the callback.
-// returned data should be considered read-only...
-int HT_iterate( HT_Table table, HT_IteratorCallback callback, void *arg);
+int sessions_add_cookie( Session session, struct MHD_Response *response);
 
-unsigned long HT_DJB_hash(const char* cp);
+int sessions_init();
+
+#define DEFAULT_SESSION_TIME_OUT 30*60 // seconds
+
+int sessions_expire( int time_out);
 
 #endif

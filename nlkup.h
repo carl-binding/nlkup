@@ -89,6 +89,8 @@ typedef struct {
 #define ILLEGAL_NUMBER -3
 #define NO_LOOKUP_TABLE -4
 #define NO_SUCH_ENTRY   -5
+#define NOT_LOGGED_IN   -6
+#define NOT_ENOUGH_DATA -7
 
 // to lock an index table entry for a given prefix
 void lock_table( IdxTblEntry index_table[], int idx);
@@ -104,6 +106,15 @@ int delete_entry( IdxTblEntry index_table[], const unsigned char *nbr);
 int nlkup_search_entry( const unsigned char *nbr, unsigned char **alias);
 int nlkup_get_block( const unsigned char *nbr, LkupTblPtr *table);
 int nlkup_get_range( const unsigned char *nbr, const unsigned char *postfix_range_len, LkupTblPtr *table);
+
+typedef struct {
+  char nbr[MAX_NBR_LENGTH+1];
+  char alias[MAX_NBR_LENGTH+1];
+} NumberAliasStruct;
+
+int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, const int nbr_after, 
+			    int *data_len, NumberAliasStruct *data[]);
+
 int nlkup_delete_entry( const unsigned char *nbr);
 int nlkup_enter_entry( const unsigned char *nbr, const unsigned char *alias);
 int nlkup_dump_file( const unsigned char *fn, int binary);
@@ -123,5 +134,7 @@ int dump_all_fn( IdxTblEntry index_table[], const unsigned char *fn, int binary)
 int restore_all_fn( IdxTblEntry index_table[], const unsigned char *fn);
 
 unsigned char *table_to_json( const LkupTblPtr table, const int status, const unsigned char *nbr);
+unsigned char *status_to_json( const int status, const unsigned char *msg);
+JSON_Buffer number_aliases_to_json( const int data_len, const NumberAliasStruct *data);
 
 #endif

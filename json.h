@@ -28,32 +28,26 @@
  either expressed or implied, of the FreeBSD Project.
 */
 
-#ifndef _HASH_TABLE_H_
-#define _HASH_TABLE_H_
+#ifndef _JSON_H_
+#define _JSON_H_
 
-typedef void *HT_Table;
+typedef void *JSON_Buffer;
 
-typedef int (*HT_CompareTo)(const void *key1, const void *key2);
-typedef long (*HT_Hash)(const void *key);
+JSON_Buffer json_new();
+void json_free( JSON_Buffer b);
 
-#define HT_STOP_ITERATION -1
-#define HT_DELETE_KEY -2
-typedef int (*HT_IteratorCallback)(const void *key, const void *data, void *arg);
+char *json_get( JSON_Buffer b);
 
-HT_Table HT_new( const unsigned int size,
-		 HT_CompareTo compare_to_callback,
-		 HT_Hash hash_callback);
-void HT_free( HT_Table table);
+int json_begin_arr( JSON_Buffer b);
+int json_end_arr( JSON_Buffer b);
 
-int HT_insert( HT_Table table, const void *key, const void *data, const int overwrite);
-int HT_delete( HT_Table table, const void *key);
-void *HT_lookup( HT_Table table, const void *key);
+int json_begin_obj( JSON_Buffer b);
+int json_end_obj( JSON_Buffer b);
 
-// iterates over hash-table. if callback returns HT_STOP_ITERATION, iteration is stopped.
-// if callback returns HT_DELETE_KEY the last key is deleted after the callback.
-// returned data should be considered read-only...
-int HT_iterate( HT_Table table, HT_IteratorCallback callback, void *arg);
+int json_append_int( JSON_Buffer b, const char *name, const int val);
+int json_append_str( JSON_Buffer b, const char *name, const char *val);
 
-unsigned long HT_DJB_hash(const char* cp);
+#define JSON_APP_INT_ARR( b, val) json_append_int( b, NULL, val)
+#define JSON_APP_STR_ARR( b, val) json_append_str( b, NULL, val)
 
 #endif

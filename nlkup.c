@@ -8,6 +8,7 @@
 
 #include "mem.h"
 #include "logger.h"
+#include "json.h"
 #include "utils.h"
 #include "nlkup.h"
 
@@ -443,8 +444,12 @@ int delete_entry( IdxTblEntry index_table[], const unsigned char *nbr) {
   // found the entry
 
   if ( t->table_len == 1) { // last entry
+
     mem_free( t);
+
     index_table[idx].table = NULL;
+    t->table_len = 0;
+    t->table_sz = 0;
 
     status = SUCCESS;
     goto out;
@@ -452,6 +457,7 @@ int delete_entry( IdxTblEntry index_table[], const unsigned char *nbr) {
 
   shift_table_down( t, e_idx);
   t->table_len--;
+  // table size unchanged...
 
   if ( t->table_sz - t->table_len >= DEF_LKUP_BLK_SIZE) {
     shrink_table( t);
@@ -559,6 +565,467 @@ int nlkup_search_entry( const unsigned char *nbr, unsigned char **alias) {
   return search_entry( index_table, nbr, alias);
 }
 
+// address of an entry. indexed into two levels.
+typedef struct {
+  int idx_tbl_idx;  // index into index table
+  int lkup_tbl_idx; // index into entry table
+} EntryAddressStruct;
+
+#define CHECK_IDX_TBL_IDX( eas)   assert( eas->idx_tbl_idx >= 0 && eas->idx_tbl_idx < (INDEX_SIZE-INDEX_OFFSET));
+
+// starting at the nearest_entry find the address of the nbr_before-th entry
+static int find_start_entry( const EntryAddressStruct *nearest_entry, const int nbr_before, EntryAddressStruct *start_entry) {
+
+  memset( start_entry, 0, sizeof( EntryAddressStruct));
+  if ( nbr_before <= 0) {
+    return FAILURE;
+  }
+
+  CHECK_IDX_TBL_IDX( nearest_entry);
+
+  // copy nearest entry as it is modified
+  EntryAddressStruct ne = *nearest_entry;
+  int last_non_empty_tbl_idx = 0;
+
+  int cnt = 0;
+
+  // lock current table and see if we can have the neeeded nbr entries before
+  LkupTbl *t = index_table[ne.idx_tbl_idx].table;
+
+  lock_table( index_table, ne.idx_tbl_idx);
+
+  if ( ne.lkup_tbl_idx >= nbr_before-1) { // satisfy request with current table
+
+    start_entry->idx_tbl_idx = ne.idx_tbl_idx;
+    start_entry->lkup_tbl_idx = ne.lkup_tbl_idx - (nbr_before-1);
+
+    unlock_table( index_table, ne.idx_tbl_idx);
+
+    assert( start_entry->lkup_tbl_idx >= 0);
+    return SUCCESS;
+  } else { // need entire current table
+    cnt += ne.lkup_tbl_idx;
+    last_non_empty_tbl_idx = ne.idx_tbl_idx;
+  }
+
+  unlock_table( index_table, ne.idx_tbl_idx);
+
+  // no. iterate over tables before current table. keeping track of # of entries
+  while ( cnt <= nbr_before && ne.idx_tbl_idx > 0) {
+
+    ne.idx_tbl_idx--;
+
+    t = index_table[ne.idx_tbl_idx].table;
+
+    if ( t == NULL || t->table_len == 0) {
+      continue;
+    }
+
+    last_non_empty_tbl_idx = ne.idx_tbl_idx;
+
+    lock_table( index_table, ne.idx_tbl_idx);
+
+    if (( nbr_before - cnt) <= t->table_len) { // table has enough entries
+      start_entry->idx_tbl_idx = ne.idx_tbl_idx;
+      start_entry->lkup_tbl_idx = t->table_len - (nbr_before-cnt-1);
+
+      unlock_table( index_table, ne.idx_tbl_idx);
+
+      assert( start_entry->lkup_tbl_idx >= 0);
+      return SUCCESS;
+    } else { // use the entire table and go one table back
+      cnt += t->table_len; 
+    }
+
+    unlock_table( index_table, ne.idx_tbl_idx);
+
+  }
+
+
+  start_entry->idx_tbl_idx = last_non_empty_tbl_idx;
+  start_entry->lkup_tbl_idx = 0;
+
+  return NOT_ENOUGH_DATA;
+}
+
+// starting at the nearest_entry, find the address of the nbr_after-th entry 
+static int find_end_entry( const EntryAddressStruct *nearest_entry, const int nbr_after, EntryAddressStruct *end_entry) {
+  memset( end_entry, 0, sizeof( EntryAddressStruct));
+  if ( nbr_after <= 0) {
+    return -1;
+  }
+
+  CHECK_IDX_TBL_IDX( nearest_entry);
+
+  // copy to modify
+  EntryAddressStruct ne = *nearest_entry;
+  int last_non_empty_tbl_idx = 0;
+
+  int cnt = 0;
+
+  // lock current table and see if we can have the needed nbr entries after
+  LkupTbl *t = index_table[ne.idx_tbl_idx].table;
+
+  lock_table( index_table, ne.idx_tbl_idx);
+
+  if ( t->table_len - (ne.lkup_tbl_idx+1) >= nbr_after) { // satisfy request with current table
+    end_entry->idx_tbl_idx = ne.idx_tbl_idx;
+    end_entry->lkup_tbl_idx = ne.lkup_tbl_idx + nbr_after;
+
+    unlock_table( index_table, ne.idx_tbl_idx);
+
+    assert( end_entry->lkup_tbl_idx < t->table_len);
+    return SUCCESS;
+  } else { // need entire current table
+    cnt += t->table_len - (ne.lkup_tbl_idx+1);
+    last_non_empty_tbl_idx = ne.idx_tbl_idx;
+  }
+
+  unlock_table( index_table, ne.idx_tbl_idx);
+
+  // no. iterate over tables after current table. keeping track of # of entries
+  while ( cnt < nbr_after && ne.idx_tbl_idx < ((INDEX_SIZE-INDEX_OFFSET)-1)) {
+
+    ne.idx_tbl_idx++;
+
+    t = index_table[ne.idx_tbl_idx].table;
+    
+    if ( t == NULL || t->table_len == 0) {
+      continue;
+    }
+
+    last_non_empty_tbl_idx = ne.idx_tbl_idx;
+
+    lock_table( index_table, ne.idx_tbl_idx);
+
+    if (( nbr_after - cnt) <= t->table_len) { // table has enough entries
+      end_entry->idx_tbl_idx = ne.idx_tbl_idx;
+      end_entry->lkup_tbl_idx = (nbr_after-cnt-1);
+
+      unlock_table( index_table, ne.idx_tbl_idx);
+
+      assert( end_entry->lkup_tbl_idx < t->table_len);
+      return SUCCESS;
+
+    } else { // use the entire table and go one table back
+      cnt += t->table_len; 
+    }
+
+    unlock_table( index_table, ne.idx_tbl_idx);
+  }
+
+  end_entry->idx_tbl_idx = last_non_empty_tbl_idx;
+  end_entry->lkup_tbl_idx = index_table[ last_non_empty_tbl_idx].table->table_len-1;
+
+  return NOT_ENOUGH_DATA;
+
+}
+
+// find the next entry up or down around lkup_tbl_idx if it is >= 0. 
+// if lkup_tlb_idx == -1 we are looking at a new table.
+static int find_nearest_table_entry( LkupTbl *t, const int up, int lkup_tbl_idx) {
+
+  // table is locked
+
+  if ( t->table_len <= 0) // empty table...
+    return -1;
+  
+  // table not empty...
+
+  if ( lkup_tbl_idx < 0) { // looking into a "new" table..
+    // start at bottom or top, depending on direction of search
+    if ( up) {
+      return 0; // first entry in table
+    } else {
+      return t->table_len-1; // last entry in table
+    }
+  } else { // looking into the table where we started search
+    // must look around index
+    if ( up) {
+      if ( lkup_tbl_idx + 1 <= t->table_len - 1) { // next entry up
+	return lkup_tbl_idx+1;
+      } else { // no next entry up
+	return -1;
+      }
+    } else {
+      if ( lkup_tbl_idx > 0) { // next entry down
+	return lkup_tbl_idx-1;
+      } else { // no next entry down
+	return -1;
+      }
+    }
+  }
+
+  assert( FALSE);
+  return -1;
+}
+
+// move along the search tables up or down and find nearest non-empty entry.
+// in case the initial search for a number did not find the nbr.
+// the idx_tbl_idx entry is locked....
+static int find_nearest_entry( int idx_tbl_idx, int lkup_tbl_idx, const int up, EntryAddressStruct *nearest_entry) {
+
+  memset( nearest_entry, 0, sizeof( EntryAddressStruct));
+
+  int found = FALSE;
+
+  // only lock subsequent tables
+  int first_table = TRUE;
+
+  while ( !found) {
+
+    if ( !first_table)
+      lock_table( index_table, idx_tbl_idx);
+
+    // current lookup table
+    LkupTbl *t = index_table[idx_tbl_idx].table;
+    int e_idx = find_nearest_table_entry( t, up, lkup_tbl_idx);
+
+    if ( !first_table)
+      unlock_table( index_table, idx_tbl_idx);
+
+    first_table = FALSE;
+
+    if ( e_idx >= 0) {
+      found = TRUE;
+      nearest_entry->idx_tbl_idx = idx_tbl_idx;
+      nearest_entry->lkup_tbl_idx = e_idx;
+      return SUCCESS;
+    }
+  
+    // inc/dec index into index-table
+    if ( up) {
+      if ( idx_tbl_idx >= INDEX_SIZE - INDEX_OFFSET) {
+	return -1;
+      }
+      idx_tbl_idx++;
+    } else {
+      if ( idx_tbl_idx <= 0) {
+	return -1;
+      }
+      idx_tbl_idx--;
+    }
+
+    // we switched lookup-table, thus the lkup table entry index is no longer valid...
+    lkup_tbl_idx = -1;
+
+  }
+  
+  return -1;
+}
+
+// copy data from one table between [start .. end] indices into data[] array
+// returns index into next empty slot, i.e. the current length used
+static int copy_table_data( int tbl_idx, int start_idx, int end_idx, int data_offset, 
+			    NumberAliasStruct data[], int data_sz) {
+
+  char prefix[7]; memset( prefix, 0, sizeof( prefix));
+  int prefix_len = strlen( prefix);
+
+  snprintf( prefix, sizeof( prefix), "%ld", (long) (tbl_idx+INDEX_OFFSET));
+
+  LkupTbl *t = index_table[tbl_idx].table;  
+  lock_table( index_table, tbl_idx);
+
+  // table size can have changed....
+
+  if ( t == NULL || t->table_len == 0) { // table is empty
+
+    unlock_table( index_table, tbl_idx);
+
+    return data_offset;
+  }
+
+  // table shrank...
+  if ( start_idx >= t->table_len-1) 
+    start_idx = t->table_len-1;
+  if ( end_idx >= t->table_len-1) 
+    end_idx = t->table_len-1;
+
+  // copy whatever is left
+  while ( start_idx <= end_idx && data_offset < data_sz) {
+
+    // get the entry
+    LkupTblEntry *e = &(t->table[start_idx]);
+
+    // buffers for decompressed string data
+    char alias[MAX_NBR_LENGTH+1];
+    char postfix[MAX_NBR_LENGTH+1];
+
+    int decompression_ok = TRUE;
+
+    // decompress the data
+    if ( decompress_to_buf( e->postfix, postfix, sizeof( postfix)) < 0) {
+      log_msg( ERR, "copy_table_data: decompress postfix failed\n");
+      decompression_ok = FALSE;
+    }
+    if ( decompress_to_buf( e->alias, alias, sizeof( alias)) < 0) {
+      log_msg( ERR, "copy_table_data: decompress alias failed\n");
+      decompression_ok = FALSE;
+    }
+
+    if ( decompression_ok) {
+      // destination
+      NumberAliasStruct *na = &(data[data_offset]);
+      memset( na, 0, sizeof( NumberAliasStruct));
+
+      strncpy( na->nbr, prefix, sizeof( na->nbr));
+      strncpy( na->nbr+prefix_len, postfix, sizeof( na->nbr)+prefix_len);
+    
+      strncpy( na->alias, alias, sizeof( alias));
+
+      data_offset++;
+    } // else decompression failed, skip entry
+
+    start_idx++;
+    
+  }
+
+  unlock_table( index_table, tbl_idx);
+
+  // next empty slot, viz. the length
+  return data_offset;
+}
+
+// given two addresses copy the range between into data array
+static int copy_numbers( EntryAddressStruct *start, EntryAddressStruct *end, int *data_len, NumberAliasStruct *data[], int data_sz) {
+
+  *data = calloc( sizeof( NumberAliasStruct), data_sz);
+  int data_idx = 0;
+  
+  int cur_idx = start->idx_tbl_idx; // current lookup table index
+  while ( (cur_idx <= end->idx_tbl_idx) && (*data_len < data_sz)) {
+
+    LkupTbl *t = index_table[cur_idx].table;
+
+    if ( t == NULL || t->table_len == 0) {
+      cur_idx++;
+      continue;
+    }
+
+    if ( cur_idx == start->idx_tbl_idx) {    // first block
+      int start_lkup_idx = start->lkup_tbl_idx;
+      int end_lkup_idx = t->table_len-1;
+      if ( cur_idx == end->idx_tbl_idx) { // end is in first block, only copy until end->lkup_tbl_idx
+	end_lkup_idx = end->lkup_tbl_idx;
+	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+	*data_len = data_idx;
+	return SUCCESS;
+      } else { // copy upper part of table
+	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+	*data_len = data_idx;
+      }
+    } else if ( cur_idx == end->idx_tbl_idx) { // current block is last block
+      int start_lkup_idx = 0;
+      int end_lkup_idx = end->lkup_tbl_idx;
+
+      data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+      *data_len = data_idx;
+      return SUCCESS;
+
+    } else { // block in middle
+      data_idx = copy_table_data( cur_idx, 0, t->table_len-1, data_idx, *data, data_sz);
+      *data_len = data_idx;
+    }
+
+    cur_idx++;
+  }
+
+  return SUCCESS;
+
+}
+
+// data is allocated and must be freed after use.
+int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, const int nbr_after, 
+			    int *data_len, NumberAliasStruct *data[]) {
+  *data_len = 0;
+  *data = NULL;
+
+  int idx = get_index( nbr);
+  if ( idx < 0) {
+    log_msg( ERR, "nlkup_get_range_around: bad index %d: %s\n", idx, nbr);
+    return FAILURE;
+  }
+
+  LkupTblEntry key;
+  memset( &key, 0, sizeof( LkupTblEntry));
+
+  if ( compress_to_buf( nbr, PREFIX_LENGTH, strlen( nbr)-PREFIX_LENGTH, key.postfix, POSTFIX_LENGTH) < 0) {
+    log_msg( ERR, "nlkup_get_range_around: failure to compress %s\n", nbr);
+
+    unlock_table( index_table, idx);
+    return FAILURE;
+  }
+
+  EntryAddressStruct nearest_entry;
+
+  LkupTbl *t = index_table[idx].table;
+
+  lock_table( index_table, idx);
+
+  int e_idx = search_entry_in_table( t, &key);
+
+  if ( e_idx < 0) { // no such entry. take nearest neighbor
+    int i_idx = -e_idx-1; // insertion point
+
+    // tbl[idx] is locked...
+    if ( find_nearest_entry( idx, i_idx, TRUE, &nearest_entry) < 0) {
+      if ( find_nearest_entry( idx, i_idx, FALSE, &nearest_entry) < 0) {
+	log_msg( WARN, "no nearest entry for %s\n", nbr);
+
+	unlock_table( index_table, idx);
+
+	return FAILURE;
+      }
+    } 
+
+  } else { // found the nbr
+    nearest_entry.lkup_tbl_idx = e_idx;
+    nearest_entry.idx_tbl_idx = idx;
+  }
+
+  unlock_table( index_table, idx);
+
+  // all tables unlocked!
+
+  assert( nearest_entry.lkup_tbl_idx >= 0 && nearest_entry.idx_tbl_idx >= 0);
+
+  EntryAddressStruct start_entry;
+  EntryAddressStruct end_entry;
+  
+  memset( &start_entry, 0, sizeof( start_entry));
+  memset( &end_entry, 0, sizeof( end_entry));
+
+  log_msg( DEBUG, "nearest_entry: lkup_tbl_idx %d idx_tbl_idx %d\n", nearest_entry.lkup_tbl_idx, nearest_entry.idx_tbl_idx);
+
+  int rc = 0;
+  if (( rc = find_start_entry( &nearest_entry, nbr_before, &start_entry)) < 0) {
+    if ( rc != NOT_ENOUGH_DATA) {
+      log_msg( ERR, "no starting entry found for %s\n", nbr);
+      return FAILURE;
+    }
+  } 
+  
+  if (( rc = find_end_entry( &nearest_entry, nbr_after, &end_entry)) < 0) {
+    if ( rc != NOT_ENOUGH_DATA) {
+      log_msg( ERR, "no ending entry found for %s\n", nbr);
+      return FAILURE;
+    }
+  }
+
+  log_msg( DEBUG, "start_entry: lkup_tbl_idx %d idx_tbl_idx %d\n", start_entry.lkup_tbl_idx, start_entry.idx_tbl_idx);
+  log_msg( DEBUG, "end_entry: lkup_tbl_idx %d idx_tbl_idx %d\n", end_entry.lkup_tbl_idx, end_entry.idx_tbl_idx);
+
+  if ( copy_numbers( &start_entry, &end_entry, data_len, data, nbr_before+nbr_after+1) < 0) {
+    *data_len = 0;
+    *data = NULL;
+    return FAILURE;
+  }
+
+
+  return SUCCESS;
+}
+
 int nlkup_get_range( const unsigned char *nbr, const unsigned char *postfix_range_len, LkupTblPtr *table) {
 
   *table = NULL;
@@ -649,6 +1116,31 @@ int nlkup_get_range( const unsigned char *nbr, const unsigned char *postfix_rang
 
 }
 
+
+JSON_Buffer number_aliases_to_json( const int data_len, const NumberAliasStruct *data) {
+
+  if ( data_len == 0) {
+    return NULL;
+  }
+
+  JSON_Buffer json = json_new();
+
+  int rc = 0;
+  int i = 0;
+
+  rc = json_begin_arr( json);
+
+  for ( i = 0; i < data_len; i++) {
+      rc = json_begin_arr( json);
+      rc = json_append_str( json, NULL, data[i].nbr);
+      rc = json_append_str( json, NULL, data[i].alias);
+      rc = json_end_arr( json);
+  }
+  
+  rc = json_end_arr( json);
+
+  return json;
+}
 
 // attempts to retrieve the block of given number. must be mem_freed() if non NULL
 int nlkup_get_block( const unsigned char *nbr, LkupTblPtr *table) {

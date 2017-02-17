@@ -28,6 +28,8 @@
  either expressed or implied, of the FreeBSD Project.
 */
 
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,10 +40,12 @@
 #include <arpa/inet.h>
 
 #include "mem.h"
+#include "json.h"
 #include "utils.h"
 #include "logger.h"
 #include "queue.h"
 #include "nlkup.h"
+
 
 // decompress into allocated buffer of given size.
 int decompress_to_buf( const unsigned char data[], unsigned char dest[], const int dest_sz) {
@@ -505,6 +509,24 @@ void unlock_table( IdxTblEntry index_table[], int idx) {
   pthread_mutex_unlock( &index_table[idx].mutex);
 }
 
+// generates a heap based string containing a JSON status.
+unsigned char *status_to_json( const int status, const unsigned char *msg) {
+  char *json = NULL;
+  int s = 0;
+
+  if ( msg == NULL) {
+    s = asprintf( &json, "{ \"status\": %d }", status);
+  } else {
+    s = asprintf( &json, "{ \"status\": %d, \"msg\": %s }", status, msg);
+  }
+
+  if ( s < 0) 
+    return NULL;
+
+  return json;
+}
+
+
 #define JSON_BUFR_TABLE_HEADER_SIZE 2048
 
 // generates a buffer containing a lookup table as JSON formatted data
@@ -712,3 +734,4 @@ char *str_cat( const char *s, ...) {
   return buf;  
   
 }
+

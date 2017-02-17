@@ -29,4 +29,5 @@ char *str_cat( const char *s, ...);
 
 #define IS_NULL(s) ((s) == NULL || strlen(s) == 0)
 
+
 #endif

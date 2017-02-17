@@ -1,3 +1,33 @@
+/*
+  Copyright (c) 2017, Carl Binding, LI-9494 Schaan
+
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice, this
+     list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ The views and conclusions contained in the software and documentation are those
+ of the authors and should not be interpreted as representing official policies,
+ either expressed or implied, of the FreeBSD Project.
+*/
+
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -254,6 +284,54 @@ unsigned long HT_DJB_hash(const char* cp)
     }
     return hash;
 }
+
+int HT_iterate( HT_Table t, HT_IteratorCallback callback, void *arg) {
+  HT_TableStruct *table = (HT_TableStruct *) t;
+  int s = 0;
+
+  LOCK( table);
+
+  int i = 0;
+  int quit = 0;
+
+  for ( i = 0; (i < table->size) && !quit; i++) {
+
+    HT_Elem e_ptr = table->table[i];
+    HT_Elem prev = NULL;
+
+    while ( e_ptr != NULL) {
+
+      int rc = (callback) (e_ptr->key, e_ptr->data, arg);
+
+      if ( rc == HT_STOP_ITERATION) {
+	quit = 1;
+	break;
+      } else if ( rc == HT_DELETE_KEY) {
+
+	HT_Elem next = e_ptr->next;
+	
+	if ( prev == NULL) {
+	  table->table[i] = next;
+	} else {
+	  prev->next = next;
+	}
+
+	free_elem( e_ptr);
+
+	// prev unchanged!
+	e_ptr = next;
+
+      } else { // else we continue
+	prev = e_ptr;
+	e_ptr = e_ptr->next;
+      }
+    }
+
+  }
+  UNLOCK( table);
+  return s;
+}
+
 
 #if 0
 int main( int argc, char **argv) {

@@ -10,8 +10,8 @@ CFLAGS	= $(DEBUG_FLAG)
 LIBS = 
 CC = gcc
 
-SOURCES = utils.c queue.c nlkup.c logger.c hashtable.c config.c 
-HEADERS = nlkup.h queue.h logger.h hashtable.h config.h utils.h
+SOURCES = utils.c queue.c nlkup.c logger.c hashtable.c config.c sessions.c json.c
+HEADERS = nlkup.h queue.h logger.h hashtable.h config.h utils.h sessions.h json.h
 
 OBJECTS = $(SOURCES:.c=.o)
 

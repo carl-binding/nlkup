@@ -43,8 +43,10 @@
 #include <microhttpd.h>
 
 #include "config.h"
+#include "json.h"
 #include "utils.h"
 #include "nlkup.h"
+#include "sessions.h"
 #include "logger.h"
 
 // file name of configs
@@ -79,7 +81,16 @@
 // POST cmd=dump_file file_name=....
 // POST cmd=restore_file file_name=.... binary=true|false
 
-#define GEN_EMPTY_RESP() MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT)
+// JSON values for return status
+static const char *empty_json = "{}"; // empty JSON object
+
+// generates an JSON empty response.
+#define GEN_EMPTY_RESP() MHD_create_response_from_buffer( strlen( empty_json), (void*) empty_json, MHD_RESPMEM_PERSISTENT)
+
+static struct MHD_Response *gen_response_status( const int status) {
+  char *msg = status_to_json( status, NULL);
+  return MHD_create_response_from_buffer( strlen( msg), msg, MHD_RESPMEM_MUST_FREE);
+}
 
 #define CHECK_ALL_DIGITS( nbr) if ( !all_digits( nbr)) { \
   log_msg( ERR, "handle_get_request: badly formatted number %s\n", nbr); \
@@ -109,8 +120,6 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
 
   long start_time = get_time_micro();
   long end_time = 0;
-
-  const char *empty_string = "{}"; // empty JSON object
 
   const char *cmd = MHD_lookup_connection_value( connection, MHD_GET_ARGUMENT_KIND, "cmd");
   const char *nbr = MHD_lookup_connection_value( connection, MHD_GET_ARGUMENT_KIND, "number");
@@ -206,6 +215,11 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
  out:
   end_time = get_time_micro();  
   log_msg( INFO, "get request: %s %ld [usec]\n", (cmd!=NULL?cmd:""), (long) (end_time-start_time));
+
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
+  // GUI is invoking us....
+  MHD_add_response_header (response, "Access-Control-Allow-Origin", "*");
+
   return response;
 }
 
@@ -267,6 +281,8 @@ struct request_info_struct
   int kv_len;  // usage counter
 
   int post_req_type;  // multi-part vs url-encoded
+
+  Session session; // session for connection/request. based on cookie id.
 };
 
 static int insert_key_value( struct request_info_struct *req_info, 
@@ -286,27 +302,6 @@ static unsigned char *get_key_value_from_req_info( struct request_info_struct *r
 						   const unsigned char *key) {
 
   return get_key_value( key, req_info->key_values, req_info->kv_len);
-}
-
-const char *greetingpage = "<html><body><h1>Welcome, world!</center></h1></body></html>";
-
-static int
-send_page (struct MHD_Connection *connection, const char *page)
-{
-  int ret;
-  struct MHD_Response *response;
-
-
-  response = MHD_create_response_from_buffer (strlen (page), (void *) page,
-					      MHD_RESPMEM_PERSISTENT);
-  if (!response) {
-    return MHD_NO;
-  }
-
-  ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
-  MHD_destroy_response (response);
-
-  return ret;
 }
 
 static int save_posted_file( const unsigned char *input_elem_name_attr,
@@ -394,30 +389,9 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
     return MHD_NO;
   }
 
-  if ( 0 == strcasecmp( key, "cmd")) {
-    if ( insert_key_value( req_info, "cmd", data, size) < 0) {
+  // record key value pair in request info
+  if ( insert_key_value( req_info, key, data, size) < 0) {
       return MHD_NO;
-    }
-  }
-  if ( 0 == strcasecmp( key, "number")) {
-    if ( insert_key_value( req_info, "number", data, size) < 0) {
-      return MHD_NO;
-    }
-  }
-  if ( 0 == strcasecmp( key, "alias")) {
-    if ( insert_key_value( req_info, "alias", data, size) < 0) {
-      return MHD_NO;
-    }
-  }
-  if ( 0 == strcasecmp( key, "file_name")) {
-    if ( insert_key_value( req_info, "file_name", data, size) < 0) {
-      return MHD_NO;
-    }
-  }
-  if ( 0 == strcasecmp( key, "binary")) {
-    if ( insert_key_value( req_info, "binary", data, size) < 0) {
-      return MHD_NO;
-    }
   }
 
   return MHD_YES;
@@ -449,6 +423,11 @@ static void request_completed (void *cls, struct MHD_Connection *connection,
 
   }
 
+  if ( NULL != req_info->session) {
+    // THREAD SAFETY ?
+    req_info->session->ref_cnt--;
+  }
+
   // release memory
   free (req_info);
   *con_cls = NULL;
@@ -460,42 +439,42 @@ static int alloc_request_info( struct MHD_Connection *connection,
 			       void **con_cls,
 			       int post_req_type) {
 
-  struct request_info_struct *con_info;
+  struct request_info_struct *req_info;
 
-  con_info = calloc (1, sizeof (struct request_info_struct));
-  if (NULL == con_info) {
+  req_info = calloc (1, sizeof (struct request_info_struct));
+  if (NULL == req_info) {
     return MHD_NO;
   }
 
   if (0 == strcasecmp (method, "POST")) {
-    con_info->postprocessor = MHD_create_post_processor (connection, POST_BUFFER_SIZE,
-							 iterate_post, (void *) con_info);
+    req_info->postprocessor = MHD_create_post_processor (connection, POST_BUFFER_SIZE,
+							 iterate_post, (void *) req_info);
 
-    if (NULL == con_info->postprocessor)  {
+    if (NULL == req_info->postprocessor)  {
       log_msg( ERR, "failure to MHD_create_post_processor. content-encoding missing?\n");
-      free (con_info);
+      free (req_info);
       return MHD_NO;
     }
 
-    con_info->request_type = POST;
-    con_info->post_req_type = post_req_type;
+    req_info->request_type = POST;
+    req_info->post_req_type = post_req_type;
 
 
   } else if ( 0 == strcasecmp( method, "GET")) {
 
-    con_info->request_type = GET;
+    req_info->request_type = GET;
 
   } else {
 
     log_msg( ERR, "unsupported method: %s\n", method);
 
-    free( con_info);
+    free( req_info);
     return MHD_NO;
 
   }
 
 
-  *con_cls = (void *) con_info;
+  *con_cls = (void *) req_info;
   return MHD_YES;
  
 }
@@ -537,13 +516,18 @@ static int gen_json_response( unsigned char buf[], int buf_sz, int status) {
   return 0;
 }
 
+static int check_credentials( const char *username, const char *password) {
+  return SUCCESS;
+}
+
+
+
 static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connection *connection,
 							     struct request_info_struct *req_info,
 							     int *http_status,
 							     const char *cmd) 
 {
 
-  const char *empty_string = "{}"; // empty JSON object
   unsigned char *response_buffer = calloc( POST_RESPONSE_BUFFER_SIZE, sizeof( unsigned char));
   int response_status = 0;
 
@@ -554,7 +538,7 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
   if ( IS_NULL( cmd)) {
     log_msg( WARN, "no or empty command in POST request\n");
     *http_status = MHD_HTTP_BAD_REQUEST;
-    response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+    response = gen_response_status( FAILURE);
     goto out;
   }
 
@@ -565,7 +549,7 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     if ( IS_NULL( number)) {
       log_msg( WARN, "missing or empty number in POST delete request\n");
       *http_status = MHD_HTTP_BAD_REQUEST;
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = gen_response_status( FAILURE);
       goto out;
     }
 
@@ -592,7 +576,7 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     if ( IS_NULL( number) || IS_NULL( alias)) {
       log_msg( WARN, "missing or empty number or alias in POST insert request\n");
       *http_status = MHD_HTTP_BAD_REQUEST;
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = gen_response_status( FAILURE);
 
       goto out;
     }
@@ -617,7 +601,7 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     if ( IS_NULL( file_name)) {
       log_msg( WARN, "missing or empty file_name in POST dump_file request\n");
       *http_status = MHD_HTTP_BAD_REQUEST;
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = gen_response_status( FAILURE);
       goto out;
     }
 
@@ -631,23 +615,59 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     if ( IS_NULL( file_name) ) {
       log_msg( WARN, "missing or empty file_name in POST restore_file request\n");
       *http_status = MHD_HTTP_BAD_REQUEST;
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = gen_response_status( FAILURE);
       goto out;
     }
 
     gen_json_response( response_buffer, POST_RESPONSE_BUFFER_SIZE, response_status);
     response = MHD_create_response_from_buffer( strlen( response_buffer), response_buffer, MHD_RESPMEM_MUST_FREE);
     goto out;
+  } else if ( strcasecmp( cmd, "login") == 0) {
+
+    const unsigned char *username = get_key_value_from_req_info( req_info, "username");
+    const unsigned char *password = get_key_value_from_req_info( req_info, "password");
+
+    if ( IS_NULL( username) || IS_NULL( password) ) {
+      log_msg( WARN, "missing or empty credentials in POST login request\n");
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = gen_response_status( FAILURE);
+      goto out;
+    }
+
+    int rc = check_credentials( username, password);
+    if ( rc == SUCCESS) {
+      *http_status = MHD_HTTP_OK;
+      response = gen_response_status( SUCCESS);
+
+      Session session = req_info->session;
+      session->logged_in = 1;
+      snprintf( session->username, sizeof( session->username), "%s", username);
+
+      log_msg( INFO, "user %s logged in\n", username);
+
+      goto out;
+
+    } else {
+      log_msg( WARN, "check_credentials failed in POST login request %s %s\n", username, password);
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = gen_response_status( rc);
+      goto out;
+    }
 
   } else {
 
     log_msg( WARN, "unknown command in POST request: %s\n", cmd);
     *http_status = MHD_HTTP_BAD_REQUEST;
-    response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+    response = gen_response_status( FAILURE);
     goto out;
   }
 
  out:
+
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
+  // GUI is invoking us....
+  MHD_add_response_header (response, "Access-Control-Allow-Origin", "*");
+
   return response;
 
 }
@@ -671,7 +691,7 @@ static struct MHD_Response *handle_post_request( struct MHD_Connection *connecti
 						 struct request_info_struct *req_info,
 						 int *http_status) {
 
-  const char *empty_string = "{}"; // empty JSON object
+  const char *error_status = "{ \"status\": -1}"; // JSON status code
 
   *http_status = MHD_HTTP_OK;
 
@@ -690,7 +710,7 @@ static struct MHD_Response *handle_post_request( struct MHD_Connection *connecti
   } else {
     log_msg( ERR, "unhandled post request type\n");
     *http_status = MHD_HTTP_BAD_REQUEST;
-    response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+    response = MHD_create_response_from_buffer( strlen( error_status), (void*) error_status, MHD_RESPMEM_PERSISTENT);
   }
 
   end_time = get_time_micro();
@@ -705,7 +725,6 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
                           const char *upload_data,
                           size_t *upload_data_size, void **con_cls)
 {
-  const char *empty_string = "";
 
   struct MHD_Response *response = NULL;
   int ret = MHD_YES;
@@ -715,7 +734,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
   if ( strcasecmp( url, SERVER_URL) != 0) {
     log_msg( WARN, "incorrect url given: %s\n", url);
-    response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+    response = GEN_EMPTY_RESP();
     http_status = MHD_HTTP_SERVICE_UNAVAILABLE;
     ret = MHD_NO;
     goto out;
@@ -727,7 +746,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
     if (( post_req_type = check_post_has_content_type( connection, method)) == 0) {
       log_msg( ERR, "missing or bad content-type for POST\n");
 
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = GEN_EMPTY_RESP();
       http_status = MHD_HTTP_BAD_REQUEST;
       ret = MHD_NO;
       goto out;
@@ -736,7 +755,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
     ret = alloc_request_info( connection, method, con_cls, post_req_type);
 
     if ( ret != MHD_YES) { // failure
-      response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+      response = GEN_EMPTY_RESP();
       http_status = MHD_HTTP_INTERNAL_SERVER_ERROR;
       ret = MHD_NO;
       goto out;
@@ -745,6 +764,19 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
     // no response sent yet. continue the processing of request....
     return MHD_YES;
   }
+
+  struct request_info_struct *req_info = (struct request_info_struct *) (*con_cls);
+
+  if ( req_info->session == NULL) {
+    req_info->session = sessions_get( connection);
+    if ( req_info->session == NULL) {
+      log_msg( ERR, "failure to get session\n");
+      return MHD_NO;
+    }
+  }
+
+  Session session = req_info->session; // alias
+  time( &session->last_access);
 
   if ( strcasecmp( method, "GET") == 0) {
 
@@ -770,13 +802,16 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
   } else {
     log_msg( ERR, "answer_to_request: unhandled method %s\n", method);
-    response = MHD_create_response_from_buffer( strlen( empty_string), (void*) empty_string, MHD_RESPMEM_PERSISTENT);
+    response = GEN_EMPTY_RESP();
     http_status = MHD_HTTP_BAD_REQUEST;
     ret = MHD_NO;
     goto out;
   }
 
  out:
+
+  sessions_add_cookie( session, response);
+
   ret = MHD_queue_response (connection, http_status, response);
   MHD_destroy_response (response);
 
@@ -784,8 +819,9 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
 }
 
-#define CHECK_POINT_DELAY 60 // seconds
-#define DEFAULT_CHECKPOINT_KEEP_TIME (5*CHECK_POINT_DELAY) // 24*3600 // seconds
+#define DEFAULT_CHECK_POINT_DELAY 60 // seconds
+#define DEFAULT_CHECKPOINT_KEEP_TIME (5*DEFAULT_CHECK_POINT_DELAY) // 24*3600 // seconds
+#define DEFAULT_CLEAN_UP_INTERVAL 30 // seconds
 
 #define DEFAULT_CHECKPOINT_DIR "/tmp"
 #define DEFAULT_CHECKPOINT_FN "nlkup_check_point"
@@ -881,16 +917,39 @@ static void *check_point_thread_body( void *arg) {
 
   log_msg( INFO, "check point thread started...\n");
 
-  int delay = CFG_get_int( "check_point_delay", CHECK_POINT_DELAY);
+  int check_point_delay = CFG_get_int( "check_point_delay", DEFAULT_CHECK_POINT_DELAY);
+  int session_time_out = CFG_get_int( "session_time_out", DEFAULT_SESSION_TIME_OUT);
+
+  int delay = CFG_get_int( "clean_up_interval", DEFAULT_CLEAN_UP_INTERVAL); // seconds
+
+  time_t last_check_point;
+  time_t last_session_expired;
+
+  time( &last_check_point);
+  time( &last_session_expired);
+
   while ( 1) {
 
     sleep( delay);
 
-    // remove old files
-    remove_old_check_point_files();
+    time_t now; 
+    time( &now);
 
-    // save new checkpoint file
-    save_check_point_file();
+    if ( difftime( now, last_check_point) > check_point_delay) {
+      // remove old files
+      remove_old_check_point_files();
+
+      // save new checkpoint file
+      save_check_point_file();
+
+      time( &last_check_point);
+    }
+
+    if ( difftime( now, last_session_expired) > session_time_out) {
+      sessions_expire( session_time_out);
+      time( &last_session_expired);
+    }
+
   }
 
 }
@@ -921,11 +980,41 @@ int main ( int argc, char **argv)
   log_open( CFG_get_str( "log_file_name", "log_file.txt"));
   log_msg( INFO, "started server...\n");
 
+  if ( sessions_init() < 0) {
+    log_msg( CRIT, "sessions_init() failure\n");
+    return -1;
+  }
+
   if ( nlkup_init() < 0) {
     log_msg( CRIT, "nlkup_init() failure\n");
     return -1;
   }
 
+
+  {
+    int data_len = 0;
+    NumberAliasStruct *data;
+
+    //    if ( nlkup_get_range_around( "1234561229", 60, 60, &data_len, &data) < 0) {
+    if ( nlkup_get_range_around( "1234561230", 60, 60, &data_len, &data) < 0) {
+      
+    }
+    fprintf( stderr, "data_len = %d\n", data_len);
+
+    JSON_Buffer json = number_aliases_to_json( data_len, data);
+
+    // free the allocated data
+    if ( data != NULL)
+      free( data);
+
+    fprintf( stderr, "%s\n", json_get( json));
+
+    // free json buffer
+    json_free( json);
+
+    exit( 0);
+
+  }
   start_checkpointer();
 
   int http_port = CFG_get_int( "http_port", HTTP_PORT);
