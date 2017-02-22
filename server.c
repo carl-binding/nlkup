@@ -28,6 +28,8 @@
  either expressed or implied, of the FreeBSD Project.
 */
 
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -68,6 +70,7 @@
 
 // expect url of form "host:port/nlkup?..."
 #define SERVER_URL "/nlkup"
+#define GUI_URL "/nlkup_gui"
 
 #define SAVED_FILE_DIRECTORY "/tmp"
 #define PATH_SEPARATOR       "/"
@@ -75,6 +78,7 @@
 // GET cmd=alias number=1234567890
 // GET cmd=block number=1234567890
 // GET cmd=range number=123456 range_postfix_length=4
+// GET cmd=range_around number=1234567890 nbr_before=xxx nbr_after=xxx
 
 // POST cmd=delete number=123456890
 // POST cmd=insert number=1234567890 alias=1234567890
@@ -116,7 +120,42 @@ static struct MHD_Response *gen_response_status( const int status) {
   } \
 }
 
-static struct MHD_Response *handle_get_request( struct MHD_Connection *connection, int *http_status) {
+typedef struct {
+  unsigned char *key;
+  unsigned char *value;
+} KV_KeyValue, *KV_KeyValuePtr;
+
+
+// per request we create one of these structures. used to collect POST parameters
+struct request_info_struct
+{
+  int request_type; // POST or GET
+  struct MHD_PostProcessor *postprocessor;  // to clean things up.
+
+  KV_KeyValuePtr key_values[MAX_NBR_PARAMS];  // POST parameters
+  int kv_len;  // usage counter
+
+  int post_req_type;  // multi-part vs url-encoded
+
+  Session session; // session for connection/request. based on cookie id.
+};
+
+
+static int check_logged_in( const Session session) {
+
+  if ( session == NULL) 
+    return FALSE;
+
+  if ( session->logged_in == TRUE) 
+    return TRUE;
+
+  return FALSE;
+}
+
+static struct MHD_Response *handle_get_request( struct MHD_Connection *connection, 
+						int *http_status, 
+						struct request_info_struct *req_info,
+						int is_gui_request) {
 
   long start_time = get_time_micro();
   long end_time = 0;
@@ -135,6 +174,13 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
 
   if ( strlen( nbr) < PREFIX_LENGTH) {
     log_msg( ERR, "handle_get_request: number too short: %s\n", nbr);
+    *http_status = MHD_HTTP_BAD_REQUEST;
+    response = GEN_EMPTY_RESP();
+    goto out;
+  }
+
+  if ( is_gui_request && strcasecmp( cmd, "range_around") != 0) {
+    log_msg( ERR, "handle_get_request: disallowed GUI request %s\n", cmd);
     *http_status = MHD_HTTP_BAD_REQUEST;
     response = GEN_EMPTY_RESP();
     goto out;
@@ -201,7 +247,81 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
 
     goto out;
 
-    
+  } else if ( strcasecmp( cmd, "range_around") == 0) {
+
+    // check that user is logged in...
+    if ( is_gui_request && !check_logged_in( req_info->session)) {
+      log_msg( ERR, "handle_get_request: GUI request %s: not logged in %s\n", cmd, req_info->session->username);
+      *http_status = MHD_HTTP_UNAUTHORIZED;
+      response = GEN_EMPTY_RESP();
+      goto out;
+    }
+
+    CHECK_ALL_DIGITS( nbr);
+
+    const char *nbr_before_str = MHD_lookup_connection_value( connection, MHD_GET_ARGUMENT_KIND, "nbr_before");
+    const char *nbr_after_str = MHD_lookup_connection_value( connection, MHD_GET_ARGUMENT_KIND, "nbr_after");
+
+    if ( IS_NULL( nbr_before_str) || IS_NULL( nbr_after_str)) {
+      log_msg( ERR, "handle_get_request: missing parameters in range_around\n");
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = GEN_EMPTY_RESP(); 
+      goto out;      
+    }
+
+    // log user's activity
+    if ( is_gui_request) {
+      log_msg( INFO, "GET range_around user: %s %s %s %s\n", req_info->session->username, nbr, nbr_before_str, nbr_after_str);
+    }
+
+    if ( !all_digits( nbr_before_str) || !all_digits( nbr_after_str)) {
+      log_msg( ERR, "handle_get_request: ill-formed parameters in range_around %s %s\n", nbr_before_str, nbr_after_str);
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = GEN_EMPTY_RESP(); 
+      goto out;      
+    }
+
+    int nbr_before = atoi( nbr_before_str);
+    int nbr_after = atoi( nbr_after_str);
+
+    if ( nbr_before <= 0 || nbr_after <= 0) {
+      log_msg( ERR, "handle_get_request: negative or zero parameters in range_around %s %s\n", nbr_before_str, nbr_after_str);
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = GEN_EMPTY_RESP(); 
+      goto out;      
+    }
+
+    int data_len = 0;
+    NumberAliasStruct *data = NULL;
+
+    if ( nlkup_get_range_around( nbr, nbr_before, nbr_after, &data_len, &data) < 0) {
+      // internal error
+      log_msg( ERR, "handle_get_request: nlkup_get_range_around failed %s %s %s\n", nbr, nbr_before_str, nbr_after_str);
+      *http_status = MHD_HTTP_INTERNAL_SERVER_ERROR;
+      response = GEN_EMPTY_RESP(); 
+      goto out;      
+    }
+
+    log_msg( DEBUG, "handle_get_request: range_around: %s %s %s %d\n", nbr, nbr_before_str, nbr_after_str, data_len);
+
+    if ( data_len == 0 || data == NULL) {
+      // no data
+      *http_status = MHD_HTTP_NO_CONTENT;
+      response = GEN_EMPTY_RESP(); 
+      goto out;      
+    }
+
+    JSON_Buffer json = number_aliases_to_json( data_len, data);
+
+    free( data); data = NULL;
+
+    *http_status = MHD_HTTP_OK;
+    response = MHD_create_response_from_buffer( json_get_length( json), (void *) json_get( json), MHD_RESPMEM_MUST_FREE);
+
+    json_free( json, FALSE); json = NULL;
+
+    goto out;
+
   } else {
 
     log_msg( ERR, "handle_get_request: unsupported command %s\n", cmd);
@@ -216,17 +336,8 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
   end_time = get_time_micro();  
   log_msg( INFO, "get request: %s %ld [usec]\n", (cmd!=NULL?cmd:""), (long) (end_time-start_time));
 
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
-  // GUI is invoking us....
-  MHD_add_response_header (response, "Access-Control-Allow-Origin", "*");
-
   return response;
 }
-
-typedef struct {
-  unsigned char *key;
-  unsigned char *value;
-} KV_KeyValue, *KV_KeyValuePtr;
 
 static KV_KeyValuePtr alloc_key_value( const unsigned char *key, const char *value, const int val_len) {
 
@@ -254,36 +365,30 @@ static void free_key_value( KV_KeyValuePtr kv) {
 }
 
 // searches array of key-values until key is found or returns NULL
-static unsigned char *get_key_value( const unsigned char *key, const KV_KeyValuePtr kvs[], int kvs_len) {
+static unsigned char *get_key_value( const unsigned char *key, const KV_KeyValuePtr kvs[], int kvs_len, const int strict) {
 
   assert( key != NULL && strlen( key) > 0);
   assert( kvs != NULL && kvs_len > 0);
 
   int i = 0;
   for ( i = 0; i < kvs_len; i++) {
-    if ( kvs[i] == NULL) {
+    if ( kvs[i] == NULL) { // end of list
       return NULL;
     }
-    if ( strcasecmp( key, kvs[i]->key) == 0) {
-      return kvs[i]->value;
+    if ( strict) { // exact match
+      if ( strcasecmp( key, kvs[i]->key) == 0) {
+	return kvs[i]->value;
+      }
+    } else { // partial match
+      const char *cp = strcasestr( kvs[i]->key, key);
+      if ( cp != NULL) { // key contained
+	return kvs[i]->value;
+      }
     }
   }
   return NULL;
 }
 
-// per request we create one of these structures. used to collect POST parameters
-struct request_info_struct
-{
-  int request_type; // POST or GET
-  struct MHD_PostProcessor *postprocessor;  // to clean things up.
-
-  KV_KeyValuePtr key_values[MAX_NBR_PARAMS];  // POST parameters
-  int kv_len;  // usage counter
-
-  int post_req_type;  // multi-part vs url-encoded
-
-  Session session; // session for connection/request. based on cookie id.
-};
 
 static int insert_key_value( struct request_info_struct *req_info, 
 			     const unsigned char *key, 
@@ -301,7 +406,15 @@ static int insert_key_value( struct request_info_struct *req_info,
 static unsigned char *get_key_value_from_req_info( struct request_info_struct *req_info,
 						   const unsigned char *key) {
 
-  return get_key_value( key, req_info->key_values, req_info->kv_len);
+  return get_key_value( key, req_info->key_values, req_info->kv_len, TRUE);
+}
+
+// we look for a key which is a substring in any of the detected parameter key-value pairs.
+// assume that key is sufficiently unique. Ideally some reg-exp matching needed....
+static unsigned char *get_matching_key_value_from_req_info( struct request_info_struct *req_info,
+						   const unsigned char *key) {
+
+  return get_key_value( key, req_info->key_values, req_info->kv_len, FALSE);
 }
 
 static int save_posted_file( const unsigned char *input_elem_name_attr,
@@ -521,11 +634,134 @@ static int check_credentials( const char *username, const char *password) {
 }
 
 
+static struct MHD_Response *handle_login( struct request_info_struct *req_info, 
+					  int *http_status,
+					  const char *cmd) {
+
+  const unsigned char *username = get_key_value_from_req_info( req_info, "username");
+  const unsigned char *password = get_key_value_from_req_info( req_info, "password");
+
+  struct MHD_Response *response = NULL;
+
+  if ( IS_NULL( username) || IS_NULL( password) ) {
+    log_msg( WARN, "missing or empty credentials in POST login request\n");
+    *http_status = MHD_HTTP_BAD_REQUEST;
+    response = gen_response_status( FAILURE);
+    goto out;
+  }
+
+  int rc = check_credentials( username, password);
+  if ( rc == SUCCESS) {
+    *http_status = MHD_HTTP_OK;
+    response = gen_response_status( SUCCESS);
+
+    Session session = req_info->session;
+    session->logged_in = TRUE;
+    snprintf( session->username, sizeof( session->username), "%s", username);
+
+    log_msg( INFO, "user %s logged in, session_id %s\n", username, session->session_id);
+
+    goto out;
+
+  } else {
+    log_msg( WARN, "check_credentials failed in POST login request %s %s\n", username, password);
+    *http_status = MHD_HTTP_BAD_REQUEST;
+    response = gen_response_status( rc);
+    goto out;
+  }
+
+ out:
+  return response;
+}
+
+static struct MHD_Response *handle_edit( struct request_info_struct *req_info, 
+					 int *http_status,
+					 const char *cmd) {
+
+  struct MHD_Response *response = NULL;
+
+  if ( !check_logged_in( req_info->session)) {
+    log_msg( ERR, "handle_edit: GUI request %s: not logged in %s\n", cmd, req_info->session->username);
+    *http_status = MHD_HTTP_UNAUTHORIZED;
+    return GEN_EMPTY_RESP();
+  }
+
+  return NULL;
+}
+
+static struct MHD_Response *handle_remove( struct request_info_struct *req_info, 
+					   int *http_status,
+					   const char *cmd) {
+
+  struct MHD_Response *response = NULL;
+
+  if ( !check_logged_in( req_info->session)) {
+    log_msg( ERR, "handle_remove: GUI request %s: not logged in %s\n", cmd, req_info->session->username);
+    *http_status = MHD_HTTP_UNAUTHORIZED;
+    return GEN_EMPTY_RESP();
+  }
+
+  // for the datatables/editor protocol format see https://editor.datatables.net/manual/server
+  // "data[<key>][number]" = ... and "data[<key>][alias]" = ...
+  const char *number = get_matching_key_value_from_req_info( req_info, "[number]");
+  const char *alias =  get_matching_key_value_from_req_info( req_info, "[alias]");
+
+  if ( IS_NULL( number) || IS_NULL( alias)) {
+    log_msg( ERR, "handle_remove: GUI request %s: null number or alias\n", cmd);
+    *http_status = MHD_HTTP_BAD_REQUEST;
+    return GEN_EMPTY_RESP();
+  }
+
+  log_msg( INFO, "handle_remove: user %s number %s alias %s\n", req_info->session->username, number, alias);
+ 
+  *http_status = MHD_HTTP_OK;
+
+  if ( nlkup_delete_entry( number) < 0) {
+    log_msg( ERR, "handle_remove: nlkup_delete_entry failure\n");
+    return gen_response_status( FAILURE);
+  }
+
+  return gen_response_status( SUCCESS);
+}
+
+static struct MHD_Response *handle_create( struct request_info_struct *req_info, 
+					   int *http_status, 
+					   const char *cmd) {
+
+  if ( !check_logged_in( req_info->session)) {
+    log_msg( ERR, "handle_create: GUI request %s: not logged in %s\n", cmd, req_info->session->username);
+    *http_status = MHD_HTTP_UNAUTHORIZED;
+    return GEN_EMPTY_RESP();
+  }
+
+  // for the datatables/editor protocol format see https://editor.datatables.net/manual/server
+  // "data[<key>][number]" = ... and "data[<key>][alias]" = ...
+  const char *number = get_matching_key_value_from_req_info( req_info, "[number]");
+  const char *alias =  get_matching_key_value_from_req_info( req_info, "[alias]");
+
+  if ( IS_NULL( number) || IS_NULL( alias)) {
+    log_msg( ERR, "handle_create: GUI request %s: null number or alias\n", cmd);
+    *http_status = MHD_HTTP_BAD_REQUEST;
+    return GEN_EMPTY_RESP();
+  }
+
+  log_msg( INFO, "handle_create: user %s number %s alias %s\n", req_info->session->username, number, alias);
+ 
+  *http_status = MHD_HTTP_OK;
+
+  if ( nlkup_enter_entry( number, alias) < 0) {
+    log_msg( ERR, "handle_create: nlkup_enter_entry failure\n");
+    return gen_response_status( FAILURE);
+  }
+
+  return gen_response_status( SUCCESS);
+}
 
 static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connection *connection,
 							     struct request_info_struct *req_info,
 							     int *http_status,
-							     const char *cmd) 
+							     const char *cmd,
+							     int is_gui_request) 
 {
 
   unsigned char *response_buffer = calloc( POST_RESPONSE_BUFFER_SIZE, sizeof( unsigned char));
@@ -542,6 +778,26 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     goto out;
   }
 
+  // GUI commands come from datatable/editor and thus have special formats.
+  // we use a different route for GUI commands "/nlkup_gui"
+  if ( is_gui_request) {
+    if ( strcasecmp( cmd, "edit") == 0) {
+      response = handle_edit( req_info, http_status, cmd);
+    } else if ( strcasecmp( cmd, "remove") == 0) {
+      response = handle_remove( req_info, http_status, cmd);
+    } else if ( strcasecmp( cmd, "create") == 0) {
+      response = handle_create( req_info, http_status, cmd);
+    } else if ( strcasecmp( cmd, "login") == 0) {
+      response = handle_login( req_info, http_status, cmd);
+    } else {
+      log_msg( WARN, "unhandled GUI command in POST request: %s\n", cmd);
+      *http_status = MHD_HTTP_BAD_REQUEST;
+      response = gen_response_status( FAILURE);
+    }
+    return response;
+  }
+
+  // non GUI commands
   if ( strcasecmp( cmd, "delete") == 0) {
 
     const unsigned char *number = get_key_value_from_req_info( req_info, "number");
@@ -622,6 +878,8 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
     gen_json_response( response_buffer, POST_RESPONSE_BUFFER_SIZE, response_status);
     response = MHD_create_response_from_buffer( strlen( response_buffer), response_buffer, MHD_RESPMEM_MUST_FREE);
     goto out;
+
+#if 0
   } else if ( strcasecmp( cmd, "login") == 0) {
 
     const unsigned char *username = get_key_value_from_req_info( req_info, "username");
@@ -640,10 +898,10 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
       response = gen_response_status( SUCCESS);
 
       Session session = req_info->session;
-      session->logged_in = 1;
+      session->logged_in = TRUE;
       snprintf( session->username, sizeof( session->username), "%s", username);
 
-      log_msg( INFO, "user %s logged in\n", username);
+      log_msg( INFO, "user %s logged in, session_id %s\n", username, session->session_id);
 
       goto out;
 
@@ -653,6 +911,8 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
       response = gen_response_status( rc);
       goto out;
     }
+
+#endif
 
   } else {
 
@@ -664,17 +924,14 @@ static struct MHD_Response *handle_post_request_url_encoded( struct MHD_Connecti
 
  out:
 
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
-  // GUI is invoking us....
-  MHD_add_response_header (response, "Access-Control-Allow-Origin", "*");
-
   return response;
 
 }
 
 static struct MHD_Response *handle_post_request_multi_part( struct MHD_Connection *connection,
 							    struct request_info_struct *req_info,
-							    int *http_status) {
+							    int *http_status,
+							    int is_gui_request) {
   const char *response_string = "{ \"status\" : 0 }"; 
   struct MHD_Response *response = NULL;
 
@@ -689,7 +946,8 @@ static struct MHD_Response *handle_post_request_multi_part( struct MHD_Connectio
 // after collecting all the parameters we handle the POST request here
 static struct MHD_Response *handle_post_request( struct MHD_Connection *connection,
 						 struct request_info_struct *req_info,
-						 int *http_status) {
+						 int *http_status,
+						 int is_gui_request) {
 
   const char *error_status = "{ \"status\": -1}"; // JSON status code
 
@@ -703,10 +961,18 @@ static struct MHD_Response *handle_post_request( struct MHD_Connection *connecti
 
   if ( req_info->post_req_type == POST_MULTI_PART) {
     cmd = MHD_HTTP_POST_ENCODING_MULTIPART_FORMDATA;
-    response = handle_post_request_multi_part( connection, req_info, http_status);
+    response = handle_post_request_multi_part( connection, req_info, http_status, is_gui_request);
   } else if ( req_info->post_req_type == POST_URL_ENCODED) {
+
     cmd = get_key_value_from_req_info( req_info, "cmd");
-    response = handle_post_request_url_encoded( connection, req_info, http_status, cmd);
+    // the GUI uses datatables/editor https://datatables.net/ 
+    // for delete, create, and edit the parameter is "action"...
+    if ( is_gui_request && cmd == NULL) {
+      cmd = get_key_value_from_req_info( req_info, "action");
+    }
+
+    response = handle_post_request_url_encoded( connection, req_info, http_status, cmd, is_gui_request);
+
   } else {
     log_msg( ERR, "unhandled post request type\n");
     *http_status = MHD_HTTP_BAD_REQUEST;
@@ -732,13 +998,15 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
   log_msg( DEBUG, "answer_to_request: %s %s %d\n", url, method, *upload_data_size);
 
-  if ( strcasecmp( url, SERVER_URL) != 0) {
+  if ( strcasecmp( url, SERVER_URL) != 0 && strcasecmp( url, GUI_URL) != 0) {
     log_msg( WARN, "incorrect url given: %s\n", url);
     response = GEN_EMPTY_RESP();
     http_status = MHD_HTTP_SERVICE_UNAVAILABLE;
     ret = MHD_NO;
     goto out;
   }
+
+  int is_gui_request = strcasecmp( url, GUI_URL) == 0;
 
   if ( NULL == *con_cls) { // first call for a given request
     
@@ -780,7 +1048,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
   if ( strcasecmp( method, "GET") == 0) {
 
-    response = handle_get_request( connection, &http_status);
+    response = handle_get_request( connection, &http_status, req_info, is_gui_request);
 
   } else if ( strcasecmp( method, "POST") == 0) {
 
@@ -796,7 +1064,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
       return MHD_YES;
     } else { // upload_data_size == 0. POST request is now completely processed
 
-      response = handle_post_request( connection, req_info, &http_status);
+      response = handle_post_request( connection, req_info, &http_status, is_gui_request);
 
     }
 
@@ -810,7 +1078,23 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
 
  out:
 
-  sessions_add_cookie( session, response);
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
+  // https://www.w3.org/TR/cors/
+  // GUI is invoking us.... Need to allow cross origin on all responses.
+  // when allow-credentials, allow-origin cannot be "*"...
+  MHD_add_response_header (response, "Access-Control-Allow-Origin", "http://localhost");
+  MHD_add_response_header (response, "Access-Control-Allow-Credentials", "true");
+  MHD_add_response_header (response, "Access-Control-Allow-Methods", "GET, POST");
+
+  // we should always return some valid json and thus set the content-type
+  MHD_add_response_header (response, "Content-Type", "application/json");
+
+  // cookie needs to be set only once. Browser remembers and sends again for our domain.
+  if ( !sessions_has_cookie( session)) {
+
+    sessions_add_cookie( session, response);
+
+  }
 
   ret = MHD_queue_response (connection, http_status, response);
   MHD_destroy_response (response);
@@ -991,6 +1275,7 @@ int main ( int argc, char **argv)
   }
 
 
+#if 0
   {
     int data_len = 0;
     NumberAliasStruct *data;
@@ -1010,11 +1295,13 @@ int main ( int argc, char **argv)
     fprintf( stderr, "%s\n", json_get( json));
 
     // free json buffer
-    json_free( json);
+    json_free( json, TRUE);
 
     exit( 0);
 
   }
+#endif
+
   start_checkpointer();
 
   int http_port = CFG_get_int( "http_port", HTTP_PORT);

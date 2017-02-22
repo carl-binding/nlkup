@@ -34,14 +34,15 @@
 typedef void *JSON_Buffer;
 
 JSON_Buffer json_new();
-void json_free( JSON_Buffer b);
+void json_free( JSON_Buffer b, int with_buffer);
 
 char *json_get( JSON_Buffer b);
+int json_get_length( JSON_Buffer b);
 
-int json_begin_arr( JSON_Buffer b);
+int json_begin_arr( JSON_Buffer b, const char *name);
 int json_end_arr( JSON_Buffer b);
 
-int json_begin_obj( JSON_Buffer b);
+int json_begin_obj( JSON_Buffer b, const char *name);
 int json_end_obj( JSON_Buffer b);
 
 int json_append_int( JSON_Buffer b, const char *name, const int val);

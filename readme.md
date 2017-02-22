@@ -30,11 +30,20 @@ node.js would have been an alternative to build up a HTTP service. But:
 * Interfacing C/C++ from JavaScript/node.js seems requires serializing/deserializing data
 * Untyped languages have sucked thirty years ago and still suck today (and Typescript is still too much bleeding edge).
 
-There is enough support for most of the needed HTTP functionality in the GNU *microhttpd* library. The main pain is heap management in the C world.
+There is enough support for most of the needed HTTP functionality in the GNU *microhttpd* library. The main pain is heap management in the C world. Although other things would also be
+nice to have:
+* JSON support: don't need much, there probably are open source libs available
+* reg-exp support: idem, would be useful for HTTP header handling
 
 # Dependencies
 
-* GNU build tools: gcc, make, ld, etc
+* GNU build tools: gcc, make, ld, C library, etc
 * [GNU microhttpd] (https://www.gnu.org/software/libmicrohttpd/): a C based library for HTTP
 
+# Todos/Options
+
+* GUI work: we have a partial GUI using [datatables/editor](https://editor.datatables.net/) which could be extended and/or embellished.
+* DB hook-up: user login, logging, back-up storage could be provided via DB access. Not yet implemented.
+* two-level locking: when querying for ranges, would need to lock multiple blocks. A global lock should protect the block-lock acquisition and release.
+* batch file processing not fully implemented yet.
 

@@ -328,7 +328,8 @@ int enter_entry( IdxTblEntry index_table[], const unsigned char *nbr, const unsi
   }
 
   unlock_table( index_table, idx);
-  return e_idx;  
+
+  return SUCCESS;  
 }
 
 static int search_entry_with_buffer(IdxTblEntry index_table[], const unsigned char *nbr, 
@@ -463,6 +464,8 @@ int delete_entry( IdxTblEntry index_table[], const unsigned char *nbr) {
     shrink_table( t);
   }
   
+  status = SUCCESS;
+
  out:
 
   unlock_table( index_table, idx);
@@ -819,10 +822,12 @@ static int find_nearest_entry( int idx_tbl_idx, int lkup_tbl_idx, const int up, 
 static int copy_table_data( int tbl_idx, int start_idx, int end_idx, int data_offset, 
 			    NumberAliasStruct data[], int data_sz) {
 
-  char prefix[7]; memset( prefix, 0, sizeof( prefix));
-  int prefix_len = strlen( prefix);
+  char prefix[7]; 
 
+  memset( prefix, 0, sizeof( prefix));
   snprintf( prefix, sizeof( prefix), "%ld", (long) (tbl_idx+INDEX_OFFSET));
+
+  int prefix_len = strlen( prefix);
 
   LkupTbl *t = index_table[tbl_idx].table;  
   lock_table( index_table, tbl_idx);
@@ -1128,17 +1133,23 @@ JSON_Buffer number_aliases_to_json( const int data_len, const NumberAliasStruct 
   int rc = 0;
   int i = 0;
 
-  rc = json_begin_arr( json);
+  // the JSON we generate here is possibly specific for datatables-dataeditor usage
+  // we return an array of objects rather than an array of arrays.
+  // an object fields are labelled.
+  rc = json_begin_obj( json, NULL);
+
+  rc = json_begin_arr( json, "data");
 
   for ( i = 0; i < data_len; i++) {
-      rc = json_begin_arr( json);
-      rc = json_append_str( json, NULL, data[i].nbr);
-      rc = json_append_str( json, NULL, data[i].alias);
-      rc = json_end_arr( json);
+    rc = json_begin_obj( json, NULL);
+    rc = json_append_str( json, "number", data[i].nbr);
+    rc = json_append_str( json, "alias", data[i].alias);
+    rc = json_end_obj( json);
   }
   
   rc = json_end_arr( json);
 
+  rc = json_end_obj( json);
   return json;
 }
 

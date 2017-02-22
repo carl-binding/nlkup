@@ -37,6 +37,8 @@ typedef struct {
   int ref_cnt;          // reference counter of number of connections using this session
   time_t last_access;   // last access time
 
+  char cookie_sent;
+
   char username[256];
   char logged_in;
 
@@ -45,6 +47,7 @@ typedef struct {
 Session sessions_get( struct MHD_Connection *connection);
 
 int sessions_add_cookie( Session session, struct MHD_Response *response);
+int sessions_has_cookie( Session session);
 
 int sessions_init();
 

@@ -38,16 +38,25 @@ JSON_Buffer json_new() {
   return j;
 }
 
-void json_free( JSON_Buffer b) {
+// free storage. if with_buffer the string buffer is freed.
+void json_free( JSON_Buffer b, int with_buffer) {
   JSON_BufferStruct *j = (JSON_BufferStruct *) b;
   assert( j->level_top == 0);
-  free( j->buf);
+  if ( with_buffer) {
+    free( j->buf);
+    j->buf = NULL;
+  }
   free( j);
 }
 
 char *json_get( JSON_Buffer b) {
   JSON_BufferStruct *j = (JSON_BufferStruct *) b;
   return j->buf;
+}
+
+int json_get_length( JSON_Buffer b) {
+  JSON_BufferStruct *j = (JSON_BufferStruct *) b;
+  return j->buf_cnt;
 }
 
 static int grow_bufr( JSON_BufferStruct *j) {
@@ -83,7 +92,7 @@ static int append_str( JSON_BufferStruct *j, const char *str) {
   return cnt;
 }
 
-static int push_level( JSON_Buffer b, char type) {
+static int push_level( JSON_Buffer b, char type, const char *name) {
   JSON_BufferStruct *j = (JSON_BufferStruct *) b;
 
   if ( j->level_top >= MAX_NBR_LEVELS) {
@@ -96,31 +105,27 @@ static int push_level( JSON_Buffer b, char type) {
 
   // get current level
   int idx = j->level_top-1;
-  int append_comma = FALSE;
 
   if ( idx >= 0) {
     if ( j->levels[idx].first_value == TRUE) {
       j->levels[idx].first_value = FALSE;
-      append_comma = FALSE;
     } else { // append comma
-      append_comma = TRUE;
+      append_str( j, ", ");
     }
-  } // else it's first push_level call
+  } // else it's first push_level call, no comma.
+
+  if ( name != NULL) { // prepend quoted name if name non-NULL
+    append_str( j, "\"");
+    append_str( j, name);
+    append_str( j, "\": ");
+  }
 
   char *delim = NULL;
 
   if ( type == JSON_OBJECT) {
-    if ( append_comma) {
-      delim = ", { ";
-    } else {
-      delim = "{ ";
-    }
+    delim = "{ ";
   } else {
-    if ( append_comma) {
-      delim = ", [ ";
-    } else {
-      delim = "[ ";
-    }
+    delim = "[ ";
   }
 
   append_str( j, delim);
@@ -155,16 +160,16 @@ static int pop_level( JSON_Buffer b, char type) {
   return 0;
 }
 
-int json_begin_arr( JSON_Buffer b) {
-  return push_level( b, JSON_ARRAY);
+int json_begin_arr( JSON_Buffer b, const char *name) {
+  return push_level( b, JSON_ARRAY, name);
 }
 
 int json_end_arr( JSON_Buffer b) {
   return pop_level( b, JSON_ARRAY);
 }
 
-int json_begin_obj( JSON_Buffer b) {
-  return push_level( b, JSON_OBJECT);
+int json_begin_obj( JSON_Buffer b, const char *name) {
+  return push_level( b, JSON_OBJECT, name);
 }
 
 int json_end_obj( JSON_Buffer b) {

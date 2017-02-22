@@ -53,7 +53,7 @@
 /**
  * Name of our cookie.
  */
-#define COOKIE_NAME "session"
+#define COOKIE_NAME "session_id"
 
 // lookup table for sessions
 static HT_Table sessions_table = NULL;
@@ -147,13 +147,23 @@ int sessions_add_cookie( Session session, struct MHD_Response *response) {
   cnt += snprintf( cstr+cnt, sizeof (cstr) - cnt, "; Expires=%s", date_str);
 #endif
 
+  cnt += snprintf( cstr+cnt, sizeof( cstr) - cnt, "; Path=/");
+  // cnt += snprintf( cstr+cnt, sizeof( cstr) - cnt, "; SameSite=Lax");
+  // cnt += snprintf( cstr+cnt, sizeof( cstr) - cnt, "; Domain=localhost");
+
   if (MHD_NO == MHD_add_response_header (response, MHD_HTTP_HEADER_SET_COOKIE, cstr)) {
     log_msg( ERR, "Failed to set session cookie header!\n");
     return -1;
   }
+
+  session->cookie_sent = TRUE;
+
   return 0;
 }
 
+int sessions_has_cookie( Session session) {
+  return session->cookie_sent;
+}
 
 // packing up some data to determine session expiration.
 typedef struct {
