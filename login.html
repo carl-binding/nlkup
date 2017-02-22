@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>login</title>
+
+    <style>
+
+    </style>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+
+</head>
+<body>
+
+
+<div id="login_div_id">
+
+    <h1>Number Lookup Login</h1>
+
+    <form id="login_form_id">
+
+        <!--
+          <div class="imgcontainer">
+            <img src="img_avatar2.png" alt="Avatar" class="avatar">
+          </div>
+        -->
+
+        <div class="container">
+
+            <!-- the name attributes of the inputs are known by server... -->
+
+            <label><b>Username</b></label>
+            <input id="username_input_id" type="text" placeholder="Enter Username" name="username" required>
+            <br>
+
+            <label><b>Password</b></label>
+            <input id="password_input_id" type="password" placeholder="Enter Password" name="password" required>
+
+            <input type="hidden" name="cmd" value="login">
+
+            <br>
+            <br>
+
+            <button type="submit">Login</button>
+
+            <button id="cancel_button_id" type="button">Cancel</button>
+
+            <!--
+                <input type="checkbox" checked="checked"> Remember me
+            -->
+
+        </div>
+
+        <div class="container">
+
+            <br>
+            <span>Change <a id="change_pwd_id" href="#">password?</a></span>
+            <br>
+            <span>Reset <a id="reset_pwd_id" href="#">password.</a></span>
+
+        </div>
+
+    </form>
+</div>
+
+<div id="change_pwd_div_id">
+    <h1>Number Lookup Change Password</h1>
+
+    <div class="container">
+        <br>
+        <span>Back to <a class="back_to_login" href="#">login.</a></span>
+    </div>
+
+</div>
+
+<div id="reset_pwd_div_id">
+    <h1>Number Lookup Reset Password</h1>
+
+    <div class="container">
+        <br>
+        <span>Back to <a class="back_to_login" href="#">login.</a></span>
+    </div>
+
+</div>
+
+<script>
+    // callback on form submit. we do an ajax call to server
+    $("#login_form_id").submit(function (event) {
+
+        console.log("submit form");
+
+        // server must reply with Access-Control-Allow-Origin header...
+        var url = "http://localhost:8888/nlkup_gui"; // the script where you handle the form input.
+
+        $.ajax({
+            type: "POST",
+            url: url,
+            // we need to enable cross domain cookie sharing...
+            crossDomain: true,
+            xhrFields: {
+                withCredentials: true
+            },
+            data: $("#login_form_id").serialize(), // serializes the form's elements.
+            dataType: "json",
+            success: function (data, textStatus, jqXHR) {
+                console.log("success");
+                if (data.status >= 0) {
+                    // navigate to main page of the app
+                    window.location.href = "./nlkup.html";
+                } else {
+                    alert("login failed");
+                }
+            },
+            error: function (jqXHR, textStatus, errorThrown) {
+                console.log("error: " + errorThrown + " " + textStatus);
+                alert("login error");
+            }
+        });
+
+
+        event.preventDefault();
+    });
+
+    // callback on cancel button click
+    $("#cancel_button_id").click(function (event) {
+        console.log("cancel_button_id click");
+        $("#username_input_id").val("");
+        $("#password_input_id").val("");
+    });
+
+    $("#change_pwd_id").click(function (event) {
+        console.log("forgot_pwd_id click");
+        $("#login_div_id").hide();
+        $("#reset_pwd_div_id").hide();
+        $("#change_pwd_div_id").show();
+    })
+
+    $("#reset_pwd_id").click(function (event) {
+        console.log("reset_pwd_id click");
+        $("#login_div_id").hide();
+        $("#reset_pwd_div_id").show();
+        $("#change_pwd_div_id").hide();
+    })
+
+    $(".back_to_login").click(function (event) {
+        console.log("back to login click");
+        $("#login_div_id").show();
+        $("#reset_pwd_div_id").hide();
+        $("#change_pwd_div_id").hide();
+    })
+
+    // A $( document ).ready() block.
+    $(document).ready(function () {
+
+
+        $("#login_div_id").show();
+        $("#reset_pwd_div_id").hide();
+        $("#change_pwd_div_id").hide();
+
+        $("#username_input_id").val("");
+        $("#password_input_id").val("");
+    });
+
+</script>
+
+</body>
+</html>
+

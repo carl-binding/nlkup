@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>nlkup</title>
+
+    <style>
+
+        input {
+            text-align: right;
+        }
+
+    </style>
+
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.10.13/css/jquery.dataTables.min.css"/>
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/buttons/1.2.4/css/buttons.dataTables.min.css"/>
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/select/1.2.1/css/select.dataTables.min.css"/>
+
+    <link rel="stylesheet" type="text/css" href="./Editor-1.6.1/css/editor.dataTables.css">
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+
+    <script src="https://cdn.datatables.net/1.10.13/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/1.2.4/js/dataTables.buttons.min.js"></script>
+    <script src="https://cdn.datatables.net/select/1.2.1/js/dataTables.select.min.js"></script>
+
+    <script type="text/javascript" src="./Editor-1.6.1/js/dataTables.editor.js"></script>
+
+
+
+</head>
+
+<body>
+
+
+<div id="range_div_id">
+
+    <h1>Numbers Lookup</h1>
+
+    <form id="range_form_id" action="GET">
+
+
+        <div class="container">
+
+            <!-- the name attributes of the inputs are known by server... -->
+
+            <label><b>Number</b></label>
+            <input id="number_input_id" type="text" value="1234561022" placeholder="Enter phone nunber" name="number" size="16" maxlength="15" minlength="6" pattern="[0-9]{6,15}" required>
+
+
+            <label><b>Entries before</b></label>
+            <input id="nbr_before_input_id" type="text" value="10" placeholder="Enter number of entries before" name="nbr_before" size="5" maxlength="5" minlength="1" pattern="[0-9]{1,5}" required>
+
+
+            <label><b>Entries after</b></label>
+            <input id="nbr_after_input_id" type="text" value="10" placeholder="Enter number of entries after" name="nbr_after" size="5" maxlength="5" minlength="1" pattern="[0-9]{1,5}" required>
+            <br>
+
+            <input type="hidden" name="cmd" value="range_around">
+
+            <br>
+
+            <button type="submit">Load...</button>
+
+            <button id="cancel_button_id" type="button">Cancel</button>
+
+            <!--
+                <input type="checkbox" checked="checked"> Remember me
+            -->
+
+        </div>
+
+    </form>
+</div>
+
+<br>
+<br>
+
+<div id="range_table_div_id">
+
+    <h1>Numbers Table</h1>
+
+    <table id="numbers_tbl" class="display" width="100%" cellspacing="0">
+        <thead>
+        <tr>
+            <th>Number</th>
+            <th>Alias</th>
+        </tr>
+        </thead>
+        <tfoot>
+        <tr>
+            <th>Number</th>
+            <th>Alias</th>
+        </tr>
+        </tfoot>
+    </table>
+
+</div>
+
+<script>
+
+    function get_number() {
+        return $("#number_input_id").val();
+    }
+
+    function get_nbr_before() {
+        return $("#nbr_before_input_id").val();
+    }
+
+    function get_nbr_after() {
+        return $("#nbr_after_input_id").val();
+    }
+
+    $("#cancel_button_id").click(function (event) {
+        $("#nbr_after_input_id").val("");
+        $("#nbr_before_input_id").val("");
+        $("#number_input_id").val("");
+    });
+
+    function get_url() {
+        return  'http://localhost:8888/nlkup_gui?cmd=range_around&number='+get_number()+'&nbr_before='+get_nbr_before()+'&nbr_after='+get_nbr_after();
+    }
+
+    $(document).ready(function() {
+
+        console.log( "document ready...");
+
+        var editor = new $.fn.dataTable.Editor( {
+            // this is the URL we post data to. the data format is datatables/editor specific
+            // see https://editor.datatables.net/manual/server for the data format used
+            ajax:  {
+                url: 'http://localhost:8888/nlkup_gui',
+                // we need to enable cross domain cookie sharing...
+                dataType: "json",
+                crossDomain: true,
+                xhrFields: {
+                 withCredentials: true
+                }
+            },
+            table: '#numbers_tbl',
+            idSrc: 'number', // use this as the unique ID aka. rowId in table (why different names???)
+            fields: [
+                { label: 'Number', name: 'number', type : 'readonly',
+                    fieldInfo: "Phone number, up to 15 digits"
+                },
+                { label: 'Alias',  name: 'alias',
+                    fieldInfo: "Alias phone number, up to 15 digits"
+                }
+                // etc
+            ]
+        } );
+
+
+        var table = $('#numbers_tbl').DataTable( {
+            ajax: {
+                url: get_url(),
+                dataType: "json",
+                // we need to enable cross domain cookie sharing...
+                crossDomain: true,
+                xhrFields: {
+                    withCredentials: true
+                }
+            },
+            dom: 'Bfrtip',
+            rowId: 'number', // use this as the unique ID
+            columns: [ // assumes that JSON data is an array of objects with labelled object fields
+                { data: "number" },
+                { data: "alias" }
+            ],
+            select: true,
+            buttons: [
+                { extend: 'create', editor: editor },
+                { extend: 'edit',   editor: editor },
+                { extend: 'remove', editor: editor }
+            ]
+        });
+
+        const MAX_NBR_LENGTH = 15; // max length of phone nbr or alias
+
+        function all_digits( nbr) {
+            if ( nbr == null || nbr == undefined || nbr.length == 0 ) {
+                return true;
+            }
+            var i = 0;
+            for ( i = 0; i < nbr.length; i++) {
+                var c = nbr.charAt( i);
+                if ( !((c >= '0') && ( c <= '9'))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function check_number( nbr) {
+            if ( nbr == null || nbr == undefined || nbr.length == 0 || nbr.length > MAX_NBR_LEN) {
+                return false;
+            }
+            if ( !all_digits( nbr))
+                return false;
+            return true;
+        }
+
+        function check_alias(alias) {
+            if (alias == null || alias == undefined || alias.length == 0 || alias.length > MAX_NBR_LEN) {
+                return false;
+            }
+            if ( !all_digits( alias))
+                return false;
+            return true;
+        }
+
+        // callback on form submit. we reload the table and prevent default event processing...
+        $("#range_form_id").submit(function (event) {
+
+            console.log("submit form");
+
+            table.ajax.url( get_url() ).load();
+
+            event.preventDefault();
+        });
+
+        editor.on( "preSubmit", function ( e, data, action ) {
+                console.log( 'preSubmit ' + action);
+                if ( action == "create") {
+                    // check data being submitted and return false if needed
+                    if ( !check_number( editor.number)) {
+                        alert( "illegal number");
+                        return false;
+                    }
+                    if ( !check_alias( editor.alias)) {
+                        alert( "illegal alias");
+                        return false;
+                    }
+                }
+                if ( action == "edit") {
+                    if ( !check_alias( editor.alias)) {
+                        alert( "illegal alias");
+                        return false;
+                    }
+
+                }
+                return true;
+            }
+        );
+
+        editor.on( "postSubmit", function ( e, json, data, action ) {
+                console.log( 'postSubmit '  + action);
+                if ( action == "create") {
+                    table.ajax.url(get_url()).load();
+                }
+            }
+        );
+
+        editor.on("create", function (e, json, data) {
+                console.log('create');
+                table.ajax.url(get_url()).load();
+            }
+        );
+
+    } );
+
+</script>
+
+</body>
+</html>
