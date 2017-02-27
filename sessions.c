@@ -133,6 +133,9 @@ static int get_expiration_date( unsigned char *buf, int buf_sz) {
 
 int sessions_add_cookie( Session session, struct MHD_Response *response) {
 
+  if ( session == NULL) 
+    return SUCCESS;
+
   int cnt = 0;
 
   char cstr[512];
@@ -162,6 +165,8 @@ int sessions_add_cookie( Session session, struct MHD_Response *response) {
 }
 
 int sessions_has_cookie( Session session) {
+  if ( session == NULL) 
+    return TRUE;
   return session->cookie_sent;
 }
 

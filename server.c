@@ -293,13 +293,16 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
 
     int data_len = 0;
     NumberAliasStruct *data = NULL;
+    int rc = 0;
 
-    if ( nlkup_get_range_around( nbr, nbr_before, nbr_after, &data_len, &data) < 0) {
-      // internal error
-      log_msg( ERR, "handle_get_request: nlkup_get_range_around failed %s %s %s\n", nbr, nbr_before_str, nbr_after_str);
-      *http_status = MHD_HTTP_INTERNAL_SERVER_ERROR;
-      response = GEN_EMPTY_RESP(); 
-      goto out;      
+    if ((rc = nlkup_get_range_around( nbr, nbr_before, nbr_after, &data_len, &data)) < 0) {
+      if ( rc != NOT_ENOUGH_DATA) {
+	// internal error
+	log_msg( ERR, "handle_get_request: nlkup_get_range_around failed %s %s %s\n", nbr, nbr_before_str, nbr_after_str);
+	*http_status = MHD_HTTP_INTERNAL_SERVER_ERROR;
+	response = GEN_EMPTY_RESP(); 
+	goto out;      
+      }
     }
 
     log_msg( DEBUG, "handle_get_request: range_around: %s %s %s %d\n", nbr, nbr_before_str, nbr_after_str, data_len);
@@ -311,6 +314,8 @@ static struct MHD_Response *handle_get_request( struct MHD_Connection *connectio
       goto out;      
     }
 
+    // note that we don't include a status here, because datatables/editor protocol doesn't include such info
+    // client would need to figure out that less data has been returned.
     JSON_Buffer json = number_aliases_to_json( data_len, data);
 
     free( data); data = NULL;
@@ -995,6 +1000,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
   struct MHD_Response *response = NULL;
   int ret = MHD_YES;
   int http_status = MHD_HTTP_OK;
+  Session session = NULL;
 
   log_msg( DEBUG, "answer_to_request: %s %s %d\n", url, method, *upload_data_size);
 
@@ -1043,7 +1049,7 @@ int answer_to_request (void *cls, struct MHD_Connection *connection,
     }
   }
 
-  Session session = req_info->session; // alias
+  session = req_info->session; // alias
   time( &session->last_access);
 
   if ( strcasecmp( method, "GET") == 0) {
@@ -1280,8 +1286,8 @@ int main ( int argc, char **argv)
     int data_len = 0;
     NumberAliasStruct *data;
 
-    //    if ( nlkup_get_range_around( "1234561229", 60, 60, &data_len, &data) < 0) {
-    if ( nlkup_get_range_around( "1234561230", 60, 60, &data_len, &data) < 0) {
+    if ( nlkup_get_range_around( "1234561229", 50, 50, &data_len, &data) < 0) {
+    // if ( nlkup_get_range_around( "1234561230", 5, 5, &data_len, &data) < 0) {
       
     }
     fprintf( stderr, "data_len = %d\n", data_len);
@@ -1300,6 +1306,7 @@ int main ( int argc, char **argv)
     exit( 0);
 
   }
+
 #endif
 
   start_checkpointer();

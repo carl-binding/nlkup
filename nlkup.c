@@ -765,36 +765,30 @@ static int find_nearest_table_entry( LkupTbl *t, const int up, int lkup_tbl_idx)
 
 // move along the search tables up or down and find nearest non-empty entry.
 // in case the initial search for a number did not find the nbr.
-// the idx_tbl_idx entry is locked....
+// in case of success, the table with nearest entry is locked.
 static int find_nearest_entry( int idx_tbl_idx, int lkup_tbl_idx, const int up, EntryAddressStruct *nearest_entry) {
 
   memset( nearest_entry, 0, sizeof( EntryAddressStruct));
 
   int found = FALSE;
 
-  // only lock subsequent tables
-  int first_table = TRUE;
-
   while ( !found) {
 
-    if ( !first_table)
-      lock_table( index_table, idx_tbl_idx);
+    lock_table( index_table, idx_tbl_idx);
 
     // current lookup table
     LkupTbl *t = index_table[idx_tbl_idx].table;
     int e_idx = find_nearest_table_entry( t, up, lkup_tbl_idx);
 
-    if ( !first_table)
-      unlock_table( index_table, idx_tbl_idx);
-
-    first_table = FALSE;
-
     if ( e_idx >= 0) {
       found = TRUE;
       nearest_entry->idx_tbl_idx = idx_tbl_idx;
       nearest_entry->lkup_tbl_idx = e_idx;
+      // keep lock on that table....
       return SUCCESS;
     }
+
+    unlock_table( index_table, idx_tbl_idx);
   
     // inc/dec index into index-table
     if ( up) {
@@ -818,9 +812,19 @@ static int find_nearest_entry( int idx_tbl_idx, int lkup_tbl_idx, const int up, 
 }
 
 // copy data from one table between [start .. end] indices into data[] array
-// returns index into next empty slot, i.e. the current length used
-static int copy_table_data( int tbl_idx, int start_idx, int end_idx, int data_offset, 
-			    NumberAliasStruct data[], int data_sz) {
+// returns index into next empty slot, i.e. the current length used (data_offset)
+static int copy_table_data( int tbl_idx,              // table index into index_table array
+			    int start_idx,            // start & end indices into table
+			    int end_idx, 
+			    int data_offset,          // offset into data array
+			    NumberAliasStruct data[], // data array
+			    int data_sz,              // size of data array
+			    int lock_table_flag       // need to lock table?
+) {
+
+  if ( start_idx > end_idx) { // nothing to copy
+    return data_offset;
+  }
 
   char prefix[7]; 
 
@@ -829,14 +833,16 @@ static int copy_table_data( int tbl_idx, int start_idx, int end_idx, int data_of
 
   int prefix_len = strlen( prefix);
 
-  LkupTbl *t = index_table[tbl_idx].table;  
-  lock_table( index_table, tbl_idx);
+  LkupTbl *t = index_table[tbl_idx].table;
+  if ( lock_table_flag)
+    lock_table( index_table, tbl_idx);
 
   // table size can have changed....
 
   if ( t == NULL || t->table_len == 0) { // table is empty
 
-    unlock_table( index_table, tbl_idx);
+    if ( lock_table_flag)
+      unlock_table( index_table, tbl_idx);
 
     return data_offset;
   }
@@ -886,7 +892,8 @@ static int copy_table_data( int tbl_idx, int start_idx, int end_idx, int data_of
     
   }
 
-  unlock_table( index_table, tbl_idx);
+  if ( lock_table_flag)
+    unlock_table( index_table, tbl_idx);
 
   // next empty slot, viz. the length
   return data_offset;
@@ -913,23 +920,23 @@ static int copy_numbers( EntryAddressStruct *start, EntryAddressStruct *end, int
       int end_lkup_idx = t->table_len-1;
       if ( cur_idx == end->idx_tbl_idx) { // end is in first block, only copy until end->lkup_tbl_idx
 	end_lkup_idx = end->lkup_tbl_idx;
-	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz, TRUE);
 	*data_len = data_idx;
 	return SUCCESS;
       } else { // copy upper part of table
-	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+	data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz, TRUE);
 	*data_len = data_idx;
       }
     } else if ( cur_idx == end->idx_tbl_idx) { // current block is last block
       int start_lkup_idx = 0;
       int end_lkup_idx = end->lkup_tbl_idx;
 
-      data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz);
+      data_idx = copy_table_data( cur_idx, start_lkup_idx, end_lkup_idx, data_idx, *data, data_sz, TRUE);
       *data_len = data_idx;
       return SUCCESS;
 
     } else { // block in middle
-      data_idx = copy_table_data( cur_idx, 0, t->table_len-1, data_idx, *data, data_sz);
+      data_idx = copy_table_data( cur_idx, 0, t->table_len-1, data_idx, *data, data_sz, TRUE);
       *data_len = data_idx;
     }
 
@@ -940,11 +947,153 @@ static int copy_numbers( EntryAddressStruct *start, EntryAddressStruct *end, int
 
 }
 
+// data structure to hold a range of number-aliases
+typedef struct {
+  int data_sz;
+  int data_len;
+  NumberAliasStruct *data;
+} RangeDataStruct;
+
+static int cmp_number_alias_struct ( const void *s1, const void *s2) {
+
+  if ( s1 == s2) 
+    return 0;
+
+  const NumberAliasStruct *n1 = (NumberAliasStruct *) s1;
+  const NumberAliasStruct *n2 = (NumberAliasStruct *) s2;
+
+  return strcasecmp( n1->nbr, n2->nbr);
+}
+
+static void sort_range_data( RangeDataStruct *range) {
+  qsort( range->data, range->data_len, sizeof( NumberAliasStruct), cmp_number_alias_struct);
+}
+
+// starting with start we copy data before and after into range data buffer
+// the data we copy out is not sorted.
+static int copy_range_data( RangeDataStruct *range, EntryAddressStruct *start, int nbr_before, int nbr_after) {
+
+  int end_idx = 0;
+  int start_idx = 0;
+
+  assert( range->data_sz > 0);
+  assert( range->data_len == 0);
+
+  // allocate data array
+  range->data = calloc( sizeof( NumberAliasStruct), range->data_sz);
+
+  // starting table is locked. copy data before & after
+
+  // before, including nearest-entry. from start of block or nbr_before
+  start_idx = 0;
+  end_idx = start->lkup_tbl_idx-1; // excluding nearest-entry
+  if ( nbr_before < (end_idx+1) - start_idx) { // truncate start
+    start_idx = (end_idx+1) - nbr_before;
+  }
+
+  range->data_len = copy_table_data( start->idx_tbl_idx, 
+				     start_idx, end_idx+1,  // include nearest entry!
+				     0, range->data, range->data_sz, 
+				     FALSE);
+  nbr_before -= (end_idx+1) - start_idx; // don't count nearest-entry here...
+
+  LkupTbl *t = index_table[start->idx_tbl_idx].table; // alias
+
+  // after nearest entry til end of table or nbr_after
+  start_idx = start->lkup_tbl_idx+1; // after nearest entry
+  end_idx = t->table_len-1; // max end idx
+  if ( nbr_after < (end_idx+1) - start_idx) { // truncate end
+    end_idx = start_idx + (nbr_after - 1); // indices...
+  }
+
+  range->data_len = copy_table_data( start->idx_tbl_idx, 
+				     start_idx, end_idx,
+				     range->data_len, range->data, range->data_sz, 
+				     FALSE);
+  nbr_after -= (end_idx+1) - start_idx;
+
+  // starting table is still locked....
+
+  // if necessary, copy from block tables before
+  int tbl_idx = start->idx_tbl_idx - 1;
+
+  while ( nbr_before > 0 && tbl_idx >= 0) {
+
+    t = index_table[tbl_idx].table; // alias
+
+    if ( t == NULL || t->table_len == 0) { // empty block
+      tbl_idx--;
+      continue;
+    }
+
+    lock_table( index_table, tbl_idx);
+
+    end_idx = t->table_len-1;
+    start_idx = t->table_len - nbr_before;
+    if ( start_idx < 0) // truncate
+      start_idx = 0;
+
+    range->data_len = copy_table_data( tbl_idx, 
+				       start_idx, end_idx, 
+				       range->data_len, range->data, range->data_sz, 
+				       FALSE);
+
+    unlock_table( index_table, tbl_idx);
+
+    // adjust the count before nearest entry
+    nbr_before -= (end_idx + 1) - start_idx;
+
+    tbl_idx--;  // go back one block
+  }
+
+  // if necessary, copy from block tables after
+  tbl_idx = start->idx_tbl_idx + 1;
+  while ( nbr_after > 0 && tbl_idx < (INDEX_SIZE-INDEX_OFFSET)) {
+
+    t = index_table[tbl_idx].table; // alias
+
+    if ( t == NULL || t->table_len == 0) { // empty block
+      tbl_idx++;
+      continue;
+    }
+
+    lock_table( index_table, tbl_idx);
+
+    start_idx = 0;
+    end_idx = nbr_after-1;
+    if ( end_idx >= t->table_len)
+      end_idx = t->table_len-1;
+
+    range->data_len = copy_table_data( tbl_idx, 
+				       start_idx, end_idx, 
+				       range->data_len, range->data, range->data_sz, 
+				       FALSE);
+
+    unlock_table( index_table, tbl_idx);
+
+    // adjust count after
+    nbr_after -= (end_idx + 1) - start_idx;
+
+    tbl_idx++;  // go forward one block
+
+  }
+
+  // the starting table is locked!
+
+  return SUCCESS;
+}
+
+
 // data is allocated and must be freed after use.
 int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, const int nbr_after, 
 			    int *data_len, NumberAliasStruct *data[]) {
+
   *data_len = 0;
   *data = NULL;
+
+  if ( nbr_before + nbr_after == 0) {
+    return FAILURE;
+  }
 
   int idx = get_index( nbr);
   if ( idx < 0) {
@@ -971,15 +1120,15 @@ int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, cons
   int e_idx = search_entry_in_table( t, &key);
 
   if ( e_idx < 0) { // no such entry. take nearest neighbor
+
+    unlock_table( index_table, idx);
+
     int i_idx = -e_idx-1; // insertion point
 
-    // tbl[idx] is locked...
+    // find_nearest_entry if successful locks the relevant table...
     if ( find_nearest_entry( idx, i_idx, TRUE, &nearest_entry) < 0) {
       if ( find_nearest_entry( idx, i_idx, FALSE, &nearest_entry) < 0) {
 	log_msg( WARN, "no nearest entry for %s\n", nbr);
-
-	unlock_table( index_table, idx);
-
 	return FAILURE;
       }
     } 
@@ -989,11 +1138,37 @@ int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, cons
     nearest_entry.idx_tbl_idx = idx;
   }
 
-  unlock_table( index_table, idx);
-
-  // all tables unlocked!
-
+  // table with nearest entry is locked...
   assert( nearest_entry.lkup_tbl_idx >= 0 && nearest_entry.idx_tbl_idx >= 0);
+
+  // allocate storage to copy out numbers and move along the needed blocks, locking
+  // blocks as we move along up and down the set of blocks. This avoids need for global
+  // locking. Need to sort copied out numbers since ordering is random - which is the price
+  // we pay for locking table per table and not using a global lock.
+  RangeDataStruct range;
+  memset( &range, 0, sizeof( range));
+  range.data_sz = nbr_before + nbr_after + 1;
+
+  if ( copy_range_data( &range, &nearest_entry, nbr_before, nbr_after) < 0) {
+    log_msg( WARN, "copy_range_data failure\n", nbr);
+    return FAILURE;
+  }
+
+  // unlock table with nearest matching entry
+  unlock_table( index_table, nearest_entry.idx_tbl_idx);
+
+  sort_range_data( &range);
+
+  // set the out parameters...
+  *data = range.data;
+  *data_len = range.data_len;
+
+  // indicate if not enough data has been copied out...
+  if ( range.data_len < nbr_before + nbr_after + 1) {
+    return NOT_ENOUGH_DATA;
+  }
+
+#if 0
 
   EntryAddressStruct start_entry;
   EntryAddressStruct end_entry;
@@ -1027,6 +1202,7 @@ int nlkup_get_range_around( const unsigned char *nbr, const int nbr_before, cons
     return FAILURE;
   }
 
+#endif
 
   return SUCCESS;
 }
