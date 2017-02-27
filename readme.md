@@ -44,6 +44,5 @@ nice to have:
 
 * GUI work: we have a partial GUI using [datatables/editor](https://editor.datatables.net/) which could be extended and/or embellished.
 * DB hook-up: user login, logging, back-up storage could be provided via DB access. Not yet implemented.
-* two-level locking: when querying for ranges, would need to lock multiple blocks. A global lock should protect the block-lock acquisition and release.
 * batch file processing not fully implemented yet.
 
